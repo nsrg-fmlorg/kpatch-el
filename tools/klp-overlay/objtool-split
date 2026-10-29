@@ -1,0 +1,72 @@
+#!/bin/bash
+# Installed as .objtool-split/objtool by klp-overlay.sh --split-objtool,
+# with scripts/Makefile.lib pointed at it.  It cannot live at
+# tools/objtool/objtool: kbuild rebuilds objtool there before compiling,
+# which on the first attempt silently replaced this switch with 10.2's
+# objtool and reproduced the failure below exactly.
+#
+# 10.2's objtool misreads 10.0's objects: building 10.0 with it gave 1602
+# "data relocation to !ENDBR" and 1064 "unreachable instruction" warnings
+# (10.1: none) and stopped on kvm-intel.o, "unannotated intra-function
+# call".  objtool also decides, for IBT, which functions keep their
+# ENDBR, so a misreading objtool can build code that faults when called
+# indirectly.  The kernel objects are therefore processed by the target's
+# own objtool, exactly as when the shipped kernel was built, and 10.2's
+# objtool only adds what klp-build needs: per-function checksums
+# (OBJTOOL_ARGS=--checksum, read from the environment) and the klp
+# subcommands.
+here=$(cd "$(dirname "$0")" && pwd)
+new=$here/objtool-klp
+old=$here/objtool-target
+
+case "${1:-}" in
+klp) exec "$new" "$@" ;;
+esac
+# The livepatch module klp-build links from the diffed objects is 10.2's
+# to process: its objtool knows a livepatch object (file->klp), keeps the
+# __pfx_ symbols klp diff already cloned and accepts __klp_funcs pointing
+# at functions without ENDBR.  10.0's objtool created each __pfx_ a second
+# time, which failed the link on the global ones ("multiple definition of
+# __pfx_xfrm_output", __pfx_ip_do_fragment).
+case "${!#}" in
+*/klp-tmp/kmod/*) exec "$new" "$@" ;;
+esac
+for a in "$@"; do
+	case "$a" in
+	--checksum|--debug-checksum*) exec "$new" "$@" ;;
+	esac
+done
+
+# The target's objtool reads OBJTOOL_ARGS too, and does not know --checksum.
+env -u OBJTOOL_ARGS "$old" "$@"
+rc=$?
+if [ $rc -ge 128 ]; then
+	# It crashed (10.0: SIGSEGV on the -ffunction-sections vmlinux.o).
+	# Keep a backtrace to tell which objtool fix it lacks; build.sh copies
+	# crash-*.txt into the artifact.
+	if command -v gdb >/dev/null; then
+		env -u OBJTOOL_ARGS gdb -q -batch -ex run -ex bt -ex 'info registers' \
+			--args "$old" "$@" > "$here/crash-$(basename "${!#}").txt" 2>&1
+	fi
+	exit $rc
+fi
+[ $rc = 0 ] || exit $rc
+
+case " ${OBJTOOL_ARGS:-} " in
+*" --checksum "*) ;;
+*) exit 0 ;;
+esac
+obj=${!#}
+args=(--checksum)
+for a in "$@"; do
+	case "$a" in
+	--link|--module) args+=("$a") ;;
+	esac
+done
+if ! env -u OBJTOOL_ARGS "$new" "${args[@]}" "$obj"; then
+	# Recorded, not fatal: klp-build only diffs the objects the patch
+	# changed, and objtool klp diff fails on any of those that lacks
+	# checksums.  build.sh prints this list.
+	echo "$obj" >> "$here/checksum-failures"
+fi
+exit 0

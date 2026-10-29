@@ -1,0 +1,25 @@
+name: docs
+
+# Every file under tools/, scripts/ and .github/workflows/ must be named in
+# both READMEs, and every relative link must resolve (tools/doccheck.py).
+# No kernel is built.
+on:
+  push:
+    branches: [main]
+    paths: ['**.md', 'tools/**', 'scripts/**', '.github/workflows/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doccheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I tools/doccheck.py .

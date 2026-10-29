@@ -1,0 +1,37 @@
+name: diffs
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'regular expression on SRPM names, to port only matching kernels (default: all)'
+        default: '.'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diffs:
+    runs-on: ubuntu-latest
+    # 8.10's hundred kernels, each fetched, unpacked as far as its SRPM's
+    # own patches reach, and patched (tools/prep.py).
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [almalinux, rocky]
+        minor: ["8.3", "8.4", "8.5", "8.6", "8.7", "8.8", "8.9", "8.10",
+                "9.0", "9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.7", "9.8",
+                "10.0", "10.1", "10.2"]
+    name: diffs ${{ matrix.distro }} ${{ matrix.minor }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -q libarchive-tools patch >/dev/null
+      - env:
+          ONLY: ${{ inputs.only }}
+        run: tools/mkdiffs.sh "${{ matrix.distro }}" "${{ matrix.minor }}" out "$ONLY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diffs-${{ matrix.distro }}-${{ matrix.minor }}
+          path: out/
