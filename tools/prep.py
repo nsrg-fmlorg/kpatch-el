@@ -11,8 +11,8 @@ applies them.  A port made against the bare tarball then either misses a
 fix the kernel has or fails to apply on top of it.
 
 Only %prep's literal "ApplyPatch <file>" and "ApplyOptionalPatch <file>"
-lines are followed, in order, with the spec's own patch command
-(patch -p1 -F1 -s).  ApplyOptionalPatch skips a missing or empty file,
+lines are followed, in order, with the spec's own patch options
+(-p1 -F1 -s) plus -f.  ApplyOptionalPatch skips a missing or empty file,
 as the spec's function does.  Macros in the file name are expanded from
 the spec's %define and %global lines.  Prints each patch applied.
 """
@@ -50,8 +50,11 @@ for m in re.finditer(r'^\s*(ApplyPatch|ApplyOptionalPatch)\s+(\S+)', prep.group(
     if kind == 'ApplyOptionalPatch' and (not os.path.exists(path) or os.path.getsize(path) == 0):
         print(f'skip (optional, empty or absent): {name}')
         continue
-    with open(path, 'rb') as f:
-        subprocess.run(['patch', '-p1', '-F1', '-s', '-d', tree], stdin=f, check=True)
+    # -f: a diff naming a file patch cannot find makes it ask "File to
+    # patch:" again and again on a closed stdin instead of failing; -f
+    # fails it, and stops patch from quietly assuming -R.
+    subprocess.run(['patch', '-f', '-p1', '-F1', '-s', '-d', tree, '-i', path],
+                   stdin=subprocess.DEVNULL, check=True)
     print(f'applied: {name}')
     n += 1
 print(f'{n} patch(es) applied')

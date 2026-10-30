@@ -51,10 +51,15 @@ modprobe nf_conntrack_bridge 2>/dev/null &&
 	echo "nf_conntrack_bridge not available (expected on 8)"
 
 # CVE-2026-99999 on the shipped kernel, before the livepatch is applied.
-# Where the shipped kernel reproduces it, the module must carry that part.
+# Whether the module carries that part comes from its port (NEED99999,
+# set by loadtest.sh); the probe cannot tell on 10, where the frame is
+# refused before the sink.  A kernel that reproduces it must have it.
 before_csum=$(bash "$(dirname "$0")/csum-probe.sh" before); echo "$before_csum"
-need99999=
-case $before_csum in *"bad=vulnerable"*) need99999=y ;; esac
+need99999=${NEED99999:-}
+echo "CVE-2026-99999 part in the module: ${need99999:+yes}${need99999:-no}"
+case $before_csum in
+*"bad=vulnerable"*) [ -n "$need99999" ] || bad "the shipped kernel reproduces CVE-2026-99999, but the port has no fix for it" ;;
+esac
 
 # The kernel's earlier CVE-2026-99999 module, as a host that applied it
 # would have it.

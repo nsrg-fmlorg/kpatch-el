@@ -70,9 +70,16 @@ while read -r srpm; do
 	bsdtar -xf "$work/k.src.rpm" -C "$work/s"
 	rm -f "$work/k.src.rpm"
 	tb=$(cd "$work/s" && ls linux-*.tar.xz | head -1)
+	# Header paths lose their first component, as -p1 strips it: mostly a/
+	# and b/, but some patches name the tree instead (RHEL-36117.patch in
+	# 4.18.0-553.el8_10: "--- linux-4.18.0-552.3.1.el8_10/include/...").
+	# Both names of a "diff --git" line too: a rename has no ---/+++ lines,
+	# and its source must be there to move (AlmaLinux 6.12.0-211.18.1's
+	# 1221-redhat-configs-enable-config-aqtion-on-all-archs.patch).
 	inc=()
-	for f in $FILES $(cat "$work/s"/*.patch 2>/dev/null |
-		sed -n 's#^\(---\|+++\) [ab]/\([^[:space:]]*\).*#\2#p' | sort -u); do
+	for f in $FILES $(cat "$work/s"/*.patch 2>/dev/null | sed -n \
+		-e 's#^\(---\|+++\) [^/[:space:]]*/\([^[:space:]]*\).*#\2#p' \
+		-e 's#^diff --git [^/[:space:]]*/\([^[:space:]]*\) [^/[:space:]]*/\([^[:space:]]*\)$#\1\n\2#p' | sort -u); do
 		inc+=(--include="*/$f")
 	done
 	bsdtar -xf "$work/s/$tb" -C "$work/t" --strip-components=1 "${inc[@]}" 2>/dev/null

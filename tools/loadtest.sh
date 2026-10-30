@@ -150,9 +150,16 @@ running=$(vm uname -r)
 echo "running kernel: $running"
 [ "$running" = "$KVER" ] || { echo "RESULT: FAIL (booted $running, wanted $KVER)"; exit 1; }
 rc=0
+# Whether the module carries CVE-2026-99999's part, from the port it was
+# built from.  The guest cannot tell by probing: on 10 the crafted frame
+# is refused before it reaches ip_do_fragment() (csum-probe.sh:
+# bad=rejected), and the guest then skipped that part's checks on a
+# kernel that needed it (Rocky 6.12.0-211.66.1.el10_2 in the pilot).
+need99999=
+grep -q ip_check_csum_start "$HERE/../patches/$DISTRO/$NVR.diff" && need99999=1
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=
 [ -f "$W/$OLDKO" ] && old='$HOME/'$OLDKO
-vm "sudo FROM_RELEASE=${FROM_RELEASE:-} OLDKO=$old bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
+vm "sudo FROM_RELEASE=${FROM_RELEASE:-} OLDKO=$old NEED99999=$need99999 bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
 vm 'sudo systemctl poweroff' || true
 exit $rc
