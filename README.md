@@ -7,26 +7,31 @@ Linux 8, 9 or 10 host (x86_64) without a reboot. On kernels that lack the
 fix for CVE-2026-99999 as well, the same module fixes that too, so a host
 needs one module whichever of the two its kernel lacks.
 
-**Status (2026-11-02): every module is built and load-tested; none is
-released yet, so there is nothing to apply.** The release, and a test of
-the one-line command on each released module, come next; until then
-`scripts/livepatch.sh` has no modules in its table and refuses every
-kernel.
+```sh
+curl -fsSL https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/main/scripts/livepatch.sh | sudo bash -s -- apply
+```
+
+The script picks the module for the running kernel (`uname -r`). A kernel
+with no released module is refused and nothing changes. `check` instead
+of `apply` only checks; `status` and `remove` show and undo it. A
+livepatch does not survive a reboot. The fix for CVE-2026-98432 is in the
+distributions' changelogs from 4.18.0-553.182.1.el8_10,
+5.14.0-687.64.1.el9_8 and 6.12.0-211.72.1.el10_2 on (checked 2026-11-06).
 
 ## Kernels
 
-684 kernels: 380 of AlmaLinux and 304 of Rocky Linux, 8.3 to 10.2,
+686 kernels: 381 of AlmaLinux and 305 of Rocky Linux, 8.3 to 10.2,
 listed in `tools/kernels.tsv`. That is every kernel whose SRPM and
 debuginfo are on the distribution's mirrors (vault included), x86_64
 only, except Rocky's 5.14.0-611.41.1.el9_7, whose debuginfo is on no
 mirror. It includes Rocky's one 8.3 kernel, 4.18.0-240.22.1.el8, which
 the earlier Rocky repository did not cover, and the kernels both
 distributions released after the earlier repositories, through
-4.18.0-553.180.1.el8_10 (AlmaLinux), 5.14.0-687.61.1.el9_8 and
-6.12.0-211.69.1.el10_2. AlmaLinux 10's x86_64_v2 variant is not covered.
+4.18.0-553.181.1.el8_10 (AlmaLinux), 553.180.1 (Rocky),
+5.14.0-687.61.1.el9_8 and 6.12.0-211.69.1.el10_2. AlmaLinux 10's x86_64_v2 variant is not covered.
 
-666 of the 684 lack the fix for CVE-2026-99999 too, and their module
-carries both. The other 18 already have it (from AlmaLinux
+666 of the 686 lack the fix for CVE-2026-99999 too, and their module
+carries both. The other 20 already have it (from AlmaLinux
 4.18.0-553.177.1.el8_10 and Rocky 553.178.1.el8_10, and from
 5.14.0-687.59.1.el9_8 and 6.12.0-211.67.1.el10_2 on both), and their
 module carries CVE-2026-98432's change alone.
@@ -35,8 +40,11 @@ module carries CVE-2026-98432's change alone.
 
 Each module was built in CI and applied with `scripts/livepatch.sh` to
 its shipped kernel in a VM (`tools/loadtest.sh`), 2026-10-31, one run
-per distribution and minor, 40 runs; all 684 printed `RESULT: PASS`.
-In each:
+per distribution and minor, 40 runs; all 684 kernels of that date
+printed `RESULT: PASS`. Each was then applied from its release with the
+one-line command (2026-11-02, 40 runs), and passed again. AlmaLinux
+553.181.1 and Rocky 553.180.1 went through both on 2026-11-06 (runs
+42066544047 and 42081208786). In each:
 
 - `inet_sock_destruct` and `tcp_v4_reqsk_destructor` are listed as
   patched functions of vmlinux.
@@ -73,7 +81,7 @@ is Red Hat's 211.56.1 tarball plus 466 patches, so a port made
 against the bare tarball would miss what the kernel has. The changed
 lines are then checked against `tools/ref/`: CVE-2026-98432's must equal
 upstream's, CVE-2026-99999's AlmaLinux's patch for 8 or 9 or upstream's
-for 10, or be absent where the kernel has that fix. Every one of the 684
+for 10, or be absent where the kernel has that fix. Every one of the 686
 matched. `tools/port.py` also stops if the tree's `kfree_rcu()` would not
 skip a NULL pointer, as both pointers usually are.
 
