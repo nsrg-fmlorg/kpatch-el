@@ -97,14 +97,29 @@ mirrors() { # <official url>
 	*) echo "$1" ;;
 	esac
 }
+# The distribution's package signing keys, from the image.  The mirrors
+# above are other people's, and until now nothing taken from them was
+# authenticated: the repositories had gpgcheck=0, and fetch only checked
+# the digest a package carries about itself (rpm -K --nosignature), which
+# any well-formed package passes.  The kernel source, its debuginfo and
+# gcc all came that way.
+for k in /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-$MAJOR \
+	/etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-$MAJOR; do
+	if [ -f "$k" ]; then rpm --import "$k"; fi
+done
+rpm -q gpg-pubkey >/dev/null || { echo "no package signing key in the image"; exit 1; }
+
 # fetch <out> <official url>: the first mirror that delivers wins; an RPM
-# must pass its digest check (rpm -K --nosignature) or is refused.
+# must carry a good signature by one of the keys above or is refused.
+# rpm -K exits 0 for an unsigned package too, and says only "digests OK".
 fetch() {
-	local out=$1 u
+	local out=$1 u r
 	for u in $(mirrors "$2"); do
 		curl -sSfL --retry 3 -o "$out" "$u" || continue
 		case "$out" in
-		*.rpm) rpm -K --nosignature "$out" >/dev/null 2>&1 || { echo "bad digest from $u"; continue; } ;;
+		*.rpm)
+			r=$(rpm -K "$out" 2>&1) || true
+			[[ $r == *"digests signatures OK" ]] || { echo "bad signature from $u: $r"; continue; } ;;
 		esac
 		return 0
 	done
@@ -124,7 +139,7 @@ for r in BaseOS AppStream $crb; do
 [vault-$r]
 name=vault $MINOR $r
 baseurl=$(mirrors "$OS/$r/$ARCH/os/")
-gpgcheck=0
+gpgcheck=1
 EOF
 done
 # The build-only packages: xxhash-devel, which objtool needs for
@@ -134,7 +149,7 @@ cat >> $R/vault.repo <<EOF
 [vault-devel]
 name=vault $MINOR devel
 baseurl=$(mirrors "$OS/devel/$ARCH/os/")
-gpgcheck=0
+gpgcheck=1
 enabled=0
 skip_if_unavailable=True
 EOF
@@ -142,7 +157,7 @@ cat >> $R/vault.repo <<EOF
 [vault-debug]
 name=vault $MINOR debuginfo
 baseurl=$DEBUGREPO
-gpgcheck=0
+gpgcheck=1
 enabled=0
 EOF
 
@@ -172,8 +187,6 @@ dnf -y builddep "/w/kernel-$NVR.src.rpm" --allowerasing --enablerepo=vault-devel
 grep -E '^No matching package|^No match for' /w/builddep.log > "$OUT/builddep-missing.txt" || true
 
 NAME=livepatch_cve_2026_98432_${NVR//[.-]/_}
-SKIPCC=
-
 # pin_gcc <version-release as the kernel records it, e.g. 11.5.0-11>
 #
 # A minor's repositories can carry gcc updates released after its GA
@@ -181,10 +194,19 @@ SKIPCC=
 # The version string the kernel records stops at the dist tag
 # (11.5.0-11 for gcc-11.5.0-11.el9 and the like), so the rest is globbed.
 #
-# If no repository has that build (9.0 GA was built with 11.3.1-2, which
-# was never published), fall back to the nearest build of the same
-# upstream gcc version from a later minor, and skip kpatch-build's
-# compiler check.  This was agreed for 9.0; compiler.txt records it.
+# If the minor's repositories lack that build, take it from another minor
+# of the same major; compiler.txt records which.  kpatch-build's compiler
+# check decides whether what was installed will do, and is never skipped:
+# AlmaLinux 9.0's GA kernel records 11.3.1-2, a build that was never
+# published, and 9.1's 11.3.1-2.1.el9.alma reports the same version and
+# passes.
+#
+# This used to take the newest build of the same upstream version from a
+# later minor and pass --skip-compiler-check.  Two released modules were
+# built that way: AlmaLinux 5.14.0-70.13.1.el9_0, with the package named
+# above, and Rocky 4.18.0-372.16.1.el8_6, with 8.6's 8.5.0-10.1 although
+# 8.5 has the kernel's 8.5.0-4.  Rebuilt with the check on, the
+# executable sections of both came out byte for byte the same.
 pin_gcc() {
 	local vr=$1 ver=${1%%-*} p pkgs= m
 	for p in gcc gcc-c++ cpp libgcc libgomp libstdc++ libstdc++-devel; do
@@ -202,27 +224,23 @@ pin_gcc() {
 		listing=$(curl -sf --retry 5 "$VAULTROOT/$m/AppStream/$ARCH/os/Packages/g/") ||
 			listing=$(curl -sf --retry 5 "$VAULTROOT/$m/AppStream/$ARCH/os/Packages/") || continue
 		[[ "$listing" == *"\"gcc-$ver-"* ]] || continue
-		cat >> $R/vault.repo <<EOF
+		cat > $R/gcc-$m.repo <<EOF
 [gcc-$m-AppStream]
 name=vault $m AppStream (gcc)
 baseurl=$(mirrors "$VAULTROOT/$m/AppStream/$ARCH/os/")
-gpgcheck=0
+gpgcheck=1
 [gcc-$m-BaseOS]
 name=vault $m BaseOS (gcc)
 baseurl=$(mirrors "$VAULTROOT/$m/BaseOS/$ARCH/os/")
-gpgcheck=0
+gpgcheck=1
 EOF
-		pkgs=
-		for p in gcc gcc-c++ cpp libgcc libgomp libstdc++ libstdc++-devel; do
-			rpm -q "$p" >/dev/null 2>&1 && pkgs="$pkgs $p-$ver-*"
-		done
-		dnf -y install --allowerasing $pkgs || dnf -y downgrade --allowerasing $pkgs || continue
-		SKIPCC=--skip-compiler-check
-		echo "SKIPPED compiler check: kernel built with $vr, building with $(rpm -q gcc) from $m" \
-			>> "$OUT/compiler.txt"
-		return 0
+		if dnf -y install --allowerasing $pkgs || dnf -y downgrade --allowerasing $pkgs; then
+			echo "gcc $vr taken from $m: $(rpm -q gcc)" | tee -a "$OUT/compiler.txt"
+			return 0
+		fi
+		rm -f $R/gcc-$m.repo
 	done
-	echo "no gcc $ver in any $MAJOR.x minor"
+	echo "gcc $vr is in no $MAJOR.x minor"
 	return 1
 }
 
@@ -294,7 +312,7 @@ build_kpatch() {
 	local rc=0
 	# kpatch-build takes the kernel version from the SRPM's file name and
 	# refuses -a alongside -r.
-	kpatch-build -j"$(nproc)" -r "/w/kernel-$NVR.src.rpm" -v "$VMLINUX" $SKIPCC \
+	kpatch-build -j"$(nproc)" -r "/w/kernel-$NVR.src.rpm" -v "$VMLINUX" \
 		-n "$NAME" -o "$OUT" "$OUT/cve-2026-98432.diff" || rc=$?
 	cp ~/.kpatch/build.log "$OUT/build.log" 2>/dev/null || true
 	# Functions kpatch-build picked up, including ones pulled in because
@@ -320,7 +338,6 @@ build_klp() {
 	gccvr=$(sed -n 's/^CONFIG_CC_VERSION_TEXT=".*(Red Hat \([0-9][^)]*\))"$/\1/p' "$config")
 	[ -n "$gccvr" ] || { echo "cannot read gcc version from .config"; return 1; }
 	pin_gcc "$gccvr"
-	[ -z "$SKIPCC" ] || { echo "klp-build has no compiler check to skip; refusing"; return 1; }
 	{
 		echo "kernel:  $(grep '^CONFIG_CC_VERSION_TEXT=' "$config")"
 		echo "gcc:     $(gcc --version | head -1)"
