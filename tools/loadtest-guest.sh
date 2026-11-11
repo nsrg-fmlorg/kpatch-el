@@ -8,8 +8,10 @@
 # and after; drives the two frees CVE-2026-98432 changes with IP options
 # present (tools/tcpopt.py); then disables and removes it.  With OLDKO=
 # set to the kernel's earlier CVE-2026-99999 module, that one is loaded
-# first, and the new one must replace it.  Prints "RESULT: PASS" or
-# "RESULT: FAIL" last.
+# first, and the new one must replace it; the earlier repository's own
+# script must then refuse to put its module back over the new one, and
+# when that module is loaded all the same, livepatch.sh must recover.
+# Prints "RESULT: PASS" or "RESULT: FAIL" last.
 set -uo pipefail
 
 ko=$1
@@ -40,6 +42,10 @@ echo "kernel:  $(uname -r)"
 echo "module:  $name"
 echo "vermagic $(modinfo -F vermagic "$ko")"
 dmesg -C
+# A warning from before the load, as a host has from boot.  livepatch.sh
+# apply used to fail on it; the search at the end leaves it out.
+OLDWARN='loadtest: logged before the livepatch'
+echo "WARNING: $OLDWARN" > /dev/kmsg
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || PY=/usr/libexec/platform-python
 
@@ -78,14 +84,22 @@ fi
 # under test may come from any build, so its SHA-256 is not pinned here.
 # FROM_RELEASE=1 instead runs the README's one-line command as published:
 # the script from GitHub, the module from the release, SHA-256 checked.
+# SCRIPT_REF is the branch whose script is fetched (main unless the
+# workflow runs on another).
+RAW=https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/${SCRIPT_REF:-main}/scripts/livepatch.sh
+apply_new() {
+	if [ "${FROM_RELEASE:-}" = 1 ]; then
+		curl -fsSL "$RAW" | bash -s -- apply
+	else
+		SKIP_SHA256=1 bash "$(dirname "$0")/livepatch.sh" apply "$ko"
+	fi
+}
 if [ "${FROM_RELEASE:-}" = 1 ]; then
-	curl -fsSL https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/main/scripts/livepatch.sh |
-		bash -s -- apply ||
-		{ bad "one-line apply failed"; dmesg | tail -20; echo "RESULT: FAIL"; exit 1; }
-else
-	SKIP_SHA256=1 bash "$(dirname "$0")/livepatch.sh" apply "$ko" ||
-		{ bad "livepatch.sh apply failed"; dmesg | tail -20; echo "RESULT: FAIL"; exit 1; }
+	# The README's dry run, on a host that has downloaded nothing yet.
+	curl -fsSL "$RAW" | bash -s -- check || bad "one-line check failed before anything was applied"
 fi
+apply_new ||
+	{ bad "livepatch.sh apply failed"; dmesg | tail -20; echo "RESULT: FAIL"; exit 1; }
 
 modprobe nfnetlink_queue || bad "modprobe nfnetlink_queue"
 modprobe xt_CHECKSUM || bad "modprobe xt_CHECKSUM"
@@ -167,7 +181,41 @@ else
 	echo "fragmented ping to $gw: no reply (slirp may not answer; not a failure by itself)"
 fi
 
-if dmesg | grep -E 'BUG:|Oops|WARNING:|livepatch: .*(fail|error)'; then
+# The earlier repository's script, run on a host that has this module:
+# it must refuse.  Its module is a replace patch as well, and would take
+# CVE-2026-98432's fix away.
+if [ -n "$oldname" ] && [ -n "${OLDREPO:-}" ]; then
+	if curl -fsSL "https://raw.githubusercontent.com/$OLDREPO/${OLDREF:-main}/scripts/livepatch.sh" |
+		bash -s -- apply; then
+		bad "the earlier repository's script applied its module over this one"
+	else
+		echo "earlier script refused, as it must"
+	fi
+	[ "$(cat /sys/kernel/livepatch/$name/enabled 2>/dev/null)" = 1 ] ||
+		bad "$name no longer enabled after the earlier script ran"
+fi
+
+# The same done by hand, as a host that ran the earlier script before it
+# refused would be left: the earlier module replaces this one, which
+# stays loaded as a module.  apply must unload it and take over again.
+if [ -n "$oldname" ]; then
+	insmod "$OLDKO" || bad "earlier module $oldname did not load over the new one"
+	for i in $(seq 120); do
+		[ "$(cat /sys/kernel/livepatch/$oldname/transition 2>/dev/null)" = 0 ] && break
+		sleep 1
+	done
+	sleep 2
+	mods=$(lsmod)
+	[[ $'\n'"$mods" == *$'\n'"$name "* ]] && m=loaded || m=unloaded
+	echo "after the earlier module took over: $name livepatch $(cat /sys/kernel/livepatch/$name/enabled 2>/dev/null || echo gone), module $m"
+	apply_new || bad "apply did not recover from a replaced module"
+	[ "$(cat /sys/kernel/livepatch/$name/enabled 2>/dev/null)" = 1 ] ||
+		bad "$name not enabled after recovering"
+	mods=$(lsmod)
+	[[ $'\n'"$mods" == *$'\n'"$oldname "* ]] && bad "earlier module $oldname still loaded after recovering"
+fi
+
+if dmesg | grep -v "$OLDWARN" | grep -E 'BUG:|Oops|WARNING:|livepatch: .*(fail|error)'; then
 	bad "kernel messages above"
 fi
 

@@ -160,6 +160,6 @@ grep -q ip_check_csum_start "$HERE/../patches/$DISTRO/$NVR.diff" && need99999=1
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=
 [ -f "$W/$OLDKO" ] && old='$HOME/'$OLDKO
-vm "sudo FROM_RELEASE=${FROM_RELEASE:-} OLDKO=$old NEED99999=$need99999 bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
+vm "sudo FROM_RELEASE=${FROM_RELEASE:-} SCRIPT_REF=${SCRIPT_REF:-} OLDREPO=$OLDREPO OLDREF=${OLDREF:-} OLDKO=$old NEED99999=$need99999 bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
 vm 'sudo systemctl poweroff' || true
 exit $rc

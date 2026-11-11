@@ -27,8 +27,8 @@ set -uo pipefail
 
 REPO=nsrg-fmlorg/kpatch-cve-2026-98432
 
-# Released, load-tested modules: distribution (ID in /etc/os-release),
-# kernel release, SHA-256, release tag.
+# Released, load-tested modules: distribution (the one that built the
+# kernel, see DISTRO below), kernel release, SHA-256, release tag.
 modules() {
 	cat <<'EOF'
 almalinux 4.18.0-240.el8.x86_64 7bf04e53a781c19454b3349b90ca28c71e7ce117a88566cd65613270a91db8da almalinux-4.18.0-240.el8
@@ -721,7 +721,19 @@ EOF
 }
 
 KVER=$(uname -r)
-DISTRO=$(. /etc/os-release 2>/dev/null; echo "${ID:-}")
+OSID=$(. /etc/os-release 2>/dev/null; echo "${ID:-}")
+# The module has to match the running kernel's build, so the distribution
+# is the one that built that kernel.  This used to be the ID in
+# /etc/os-release alone: a host converted from one distribution to the
+# other and not yet rebooted then got the other one's module, which
+# passes the vermagic and SHA-256 checks, and for 47 of the 287 kernel
+# versions both ship the two modules differ.  Vendor reads "AlmaLinux",
+# "Rocky" (8) or "Rocky Enterprise Software Foundation" (9, 10).
+case $(rpm -q --qf '%{VENDOR}' "kernel-core-$KVER" 2>/dev/null) in
+AlmaLinux*) DISTRO=almalinux ;;
+Rocky*) DISTRO=rocky ;;
+*) DISTRO=$OSID ;;
+esac
 NAME=livepatch_cve_2026_98432_$(echo "${KVER%.x86_64}" | tr '.-' '__')
 SYS=/sys/kernel/livepatch/$NAME
 row=$(modules | awk -v d="$DISTRO" -v k="$KVER" '$1 == d && $2 == k')
@@ -760,6 +772,8 @@ check() {
 	almalinux|rocky) ok "$(. /etc/os-release; echo "$NAME $VERSION_ID")" ;;
 	*) bad "distribution is '$DISTRO'; these modules are for AlmaLinux and Rocky Linux" ;;
 	esac
+	[ "$DISTRO" = "$OSID" ] ||
+		echo "note: /etc/os-release says '$OSID', but the running kernel was built by $DISTRO; using its module"
 	local sb
 	sb=$(mokutil --sb-state 2>/dev/null || true)
 	case "$sb" in
@@ -776,10 +790,15 @@ check() {
 			[ "$(sha256sum "$ko" | cut -d' ' -f1)" = "$SHA256" ] && ok "SHA-256 matches the release" ||
 				bad "SHA-256 differs from the release (self-built? set SKIP_SHA256=1)"
 		fi
+	elif [ "$1" = later ] && [ -n "$row" ] && [ "${SKIP_SHA256:-}" != 1 ]; then
+		# "check" on its own used to fail here on every host that had
+		# not applied yet, since only apply downloads.
+		echo "note: no module at $ko yet; apply downloads it from $TAG and checks it"
 	else
 		bad "no module at $ko"
 	fi
 	[ -d "$SYS" ] && echo "note: $NAME is already loaded"
+	stale && echo "note: $NAME is loaded as a module but is not a livepatch any more; apply and remove unload it"
 	local o
 	for o in $(earlier); do echo "note: earlier module $o is loaded; apply replaces it"; done
 	return $fail
@@ -788,6 +807,26 @@ check() {
 # The CVE-2026-99999 modules of the earlier repositories that are loaded.
 earlier() {
 	lsmod | awk '$1 ~ /^livepatch_cve_2026_99999_/ {print $1}'
+}
+
+# This module, loaded but no longer a livepatch: something replaced it.
+# An earlier repository's CVE-2026-99999 module does, when it is applied
+# after this one; it is a replace patch too, and takes this one's
+# CVE-2026-98432 fix away with it.  remove then said "not loaded" and
+# apply failed in insmod, on a module of the same name.
+stale() {
+	[ ! -d "$SYS" ] && [ -d "/sys/module/$NAME" ]
+}
+
+unload_stale() {
+	stale || return 0
+	local i
+	for i in $(seq 10); do
+		rmmod "$NAME" 2>/dev/null && break
+		sleep 1
+	done
+	[ ! -d "/sys/module/$NAME" ] && ok "unloaded $NAME, which another livepatch had replaced" ||
+		die "$NAME is loaded but replaced by another livepatch, and rmmod failed"
 }
 
 # A replaced patch stays loaded as a module, disabled (and on 4.18 without
@@ -837,13 +876,19 @@ fetch() {
 
 apply() {
 	fetch
-	check || die "checks failed; nothing loaded"
+	check now || die "checks failed; nothing loaded"
 	[ -d "$SYS" ] && { echo "already loaded"; status; return 0; }
+	unload_stale
+	# Only what the kernel logs from here on is this load's doing.  The
+	# whole buffer used to be searched, so a WARNING from boot made apply
+	# exit 1 with the patch enabled.
+	local msgs mark="livepatch.sh[$$]: loading $NAME"
+	echo "$mark" > /dev/kmsg 2>/dev/null || mark=
 	insmod "$ko" || die "insmod failed; see dmesg"
 	wait_transition || die "transition did not finish in 120s; see dmesg"
 	[ "$(cat "$SYS/enabled" 2>/dev/null)" = 1 ] || die "patch not enabled"
-	local msgs
 	msgs=$(dmesg)
+	[ -n "$mark" ] && msgs=${msgs##*"$mark"}
 	[[ "$msgs" == *"livepatch: '$NAME': patching complete"* ]] &&
 		ok "patching complete" || bad "no 'patching complete' in dmesg"
 	if grep -E 'BUG:|Oops|WARNING:' <<<"$msgs"; then
@@ -855,6 +900,7 @@ apply() {
 }
 
 remove() {
+	if stale; then unload_stale; return 0; fi
 	[ -d "$SYS" ] || { echo "$NAME: not loaded"; return 0; }
 	echo 0 > "$SYS/enabled" || die "could not disable"
 	wait_transition || die "unpatch transition did not finish in 120s"
@@ -870,7 +916,7 @@ remove() {
 }
 
 case "${1:-}" in
-check)  check ;;
+check)  check later ;;
 apply)  apply ;;
 status) status ;;
 remove) remove ;;
