@@ -43,13 +43,26 @@ mkdir -p "$P/kpatch"
 RES=$OUT/result-$DISTRO-$MINOR.txt
 : > "$RES"
 
-debug=$(curl -sf "$DBG/" | grep -oE 'kernel-debuginfo-[0-9][^"]*\.x86_64\.rpm' |
+# A listing that cannot be fetched is an error.  Unchecked, a failed
+# debuginfo listing turned every SRPM into NO-DEBUGINFO and a failed
+# source listing left the result empty, and both exited 0: a kernel
+# could go unported with nothing to show it.
+dbglist=$(curl -sf --retry 3 "$DBG/") || { echo "cannot list $DBG/"; exit 1; }
+srclist=$(curl -sf --retry 3 "$SRC/") || { echo "cannot list $SRC/"; exit 1; }
+debug=$(printf '%s\n' "$dbglist" | grep -oE 'kernel-debuginfo-[0-9][^"]*\.x86_64\.rpm' |
 	sed 's/^kernel-debuginfo-//; s/\.x86_64\.rpm$//' | sort -u)
+srpms=$(printf '%s\n' "$srclist" | grep -oE 'kernel-[0-9][^"]*\.src\.rpm' | sort -u)
+[ -n "$debug" ] || { echo "no kernel-debuginfo in $DBG/"; exit 1; }
+[ -n "$srpms" ] || { echo "no kernel SRPM in $SRC/"; exit 1; }
+# None matching <nvr-regex> is not an error: the workflow passes one
+# regex to every minor.
+srpms=$(printf '%s\n' "$srpms" | grep -E -- "$ONLY")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-curl -sf "$SRC/" | grep -oE 'kernel-[0-9][^"]*\.src\.rpm' | sort -u | grep -E -- "$ONLY" |
+printf '%s' "${srpms:+$srpms
+}" |
 while read -r srpm; do
 	snvr=${srpm#kernel-}; snvr=${snvr%.src.rpm}
 	# The binaries' version: the same, or (Rocky 9.0) with the minor
@@ -138,6 +151,21 @@ while read -r srpm; do
 	if [ -z "$match" ]; then
 		echo "$nvr $snvr NO-MATCH-99999" >> "$RES"
 		cp "$work/out-b.diff" "$OUT/nomatch-$DISTRO-$nvr.diff"
+		continue
+	fi
+	# The kpatch-build form is what 8 and 9 build, and was compared with
+	# nothing.  Its lines for CVE-2026-98432 are upstream's unchanged; the
+	# rest must be the one form kpatchify.py has given every kernel of
+	# that reference so far (tools/ref/99999-kpatch/).
+	grep -E '^[+-][^+-]' "$work/out-k.diff" | LC_ALL=C sort > "$work/kchg.txt"
+	LC_ALL=C comm -12 "$work/kchg.txt" "$HERE/ref/98432/upstream.txt" > "$work/kchg98432.txt"
+	LC_ALL=C comm -23 "$work/kchg.txt" "$HERE/ref/98432/upstream.txt" > "$work/kchg99999.txt"
+	kref=$HERE/ref/99999-kpatch/$match.txt
+	[ "$match" = already ] && kref=/dev/null
+	if ! cmp -s "$work/kchg98432.txt" "$HERE/ref/98432/upstream.txt" ||
+	   ! cmp -s "$work/kchg99999.txt" "$kref"; then
+		echo "$nvr $snvr NO-MATCH-KPATCH" >> "$RES"
+		cp "$work/out-k.diff" "$OUT/nomatch-kpatch-$DISTRO-$nvr.diff"
 		continue
 	fi
 	cp "$work/out-b.diff" "$P/$nvr.diff"

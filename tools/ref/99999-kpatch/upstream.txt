@@ -1,0 +1,78 @@
++				goto error;
++			err = ip_check_csum_start(skb);
++			err = skb_checksum_help(skb);
++			err = skb_checksum_help(skb);
++			goto blackhole;
++			goto error;
++			goto fail;
++			if (err)
++			return -EINVAL;
++			return NF_DROP;
++		    ip_check_csum_start(entskb))
++		err = ip_check_csum_start(skb);
++		err = ip_check_csum_start(skb);
++		err = skb_checksum_help(skb);
++		if (!err)
++		if (!err)
++		if (!pskb_network_may_pull(entskb, sizeof(struct iphdr)) ||
++		if (err)
++		if (err)
++		if (err)
++		if (skb->protocol == htons(ETH_P_IP)) {
++		if (xt_family(par) == NFPROTO_IPV4 && ip_check_csum_start(skb))
++		return -EINVAL;
++		return -EINVAL;
++		return -EINVAL;
++		return -EINVAL;
++		return -EINVAL;
++	XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
++	if (entskb->protocol == htons(ETH_P_IP)) {
++	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb)) {
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++	kfree_skb(skb);
++	return 0;
++	return 0;
++	return 0;
++	return 0;
++	return 0;
++	return err;
++	}
++	}
++	}
++	}
++#include <net/ip.h>
++#include <net/ip.h>
++error:
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++{
++{
++{
++{
++{
++}
++}
++}
++}
++}
+-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+-			kfree_skb(skb);
+-			return err;
+-		err = skb_checksum_help(skb);
+-		goto blackhole;
+-		goto fail;
+-		if (err) {
+-	    (err = skb_checksum_help(skb)))
+-	    (err = skb_checksum_help(skb)))
+-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+-	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb))
