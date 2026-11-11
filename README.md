@@ -11,8 +11,11 @@ needs one module whichever of the two its kernel lacks.
 curl -fsSL https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/main/scripts/livepatch.sh | sudo bash -s -- apply
 ```
 
-The script picks the module for the running kernel (`uname -r`). A kernel
-with no released module is refused and nothing changes. `check` instead
+The script picks the module for the running kernel (`uname -r`) and for
+the distribution that built it (the vendor its `kernel-core` package
+records, so a host converted from one distribution to the other is served
+by the kernel it still runs). A kernel with no released module is refused
+and nothing changes. `check` instead
 of `apply` only checks; `status` and `remove` show and undo it. A
 livepatch does not survive a reboot. The fix for CVE-2026-98432 is in the
 distributions' changelogs from 4.18.0-553.182.1.el8_10,
@@ -64,6 +67,28 @@ one-line command (2026-11-02, 40 runs), and passed again. AlmaLinux
   and its module unloaded.
 - The module was then disabled and removed.
 
+`scripts/livepatch.sh` changed on 2026-11-11, and the released modules of
+14 kernels were applied with it again: seven of each distribution, from
+8.3 or 8.4, 8.10, 9.0, 9.8, 10.0 and 10.2, twelve of them with a module
+in the earlier repositories (runs 42963197753 and 42963213064), all
+`RESULT: PASS`. What is new in
+those runs:
+
+- `check` on a host that has nothing yet passes and says `apply` will
+  download the module. It used to fail there for want of the file.
+- A `WARNING` written to the kernel log before the load does not fail
+  `apply`. The whole log used to be searched, so an old warning made
+  `apply` exit 1 with the patch enabled.
+- On the twelve with an earlier module, the earlier repository's
+  script refuses to load its module while this one is applied. It used
+  to load it, and that took CVE-2026-98432's fix away.
+- The earlier module was then loaded by hand over this one, which leaves
+  this module in the kernel with its patch gone. `apply` unloaded it and
+  loaded it again.
+
+The choice of module by the kernel's vendor ran in all 14, each on its
+own distribution; a converted host was not among them.
+
 Not tested: the race itself. Showing CVE-2026-98432 on the shipped
 kernel and its absence with the module needs KASAN and a contrived
 interleaving of a retransmitted SYN with the child's release; it does
@@ -81,13 +106,37 @@ is Red Hat's 211.56.1 tarball plus 466 patches, so a port made
 against the bare tarball would miss what the kernel has. The changed
 lines are then checked against `tools/ref/`: CVE-2026-98432's must equal
 upstream's, CVE-2026-99999's AlmaLinux's patch for 8 or 9 or upstream's
-for 10, or be absent where the kernel has that fix. Every one of the 686
-matched. `tools/port.py` also stops if the tree's `kfree_rcu()` would not
+for 10, or be absent where the kernel has that fix. The form fed to
+kpatch-build (`tools/kpatchify.py`) is checked the same way against
+`tools/ref/99999-kpatch/`. Every one of the 686 matched. The script stops
+when a mirror's listing cannot be read or lists no SRPM; it used to
+report success over nothing. `tools/port.py` also stops if the tree's `kfree_rcu()` would not
 skip a NULL pointer, as both pointers usually are.
 
 8 and 9 are built with kpatch-build, 10 with the kernel's own
 klp-build; both build replace patches, which is how a module takes over
 from an earlier one.
+
+`build.sh` takes the kernel's SRPM, its debuginfo and the compiler from
+the distribution's mirrors and vault. Since 2026-11-11 it checks their
+signatures against the keys in the distribution's container image; the
+released modules were built before that, from packages nobody verified.
+The compiler is the build the kernel records, taken from another minor
+when the kernel's own no longer has it, and kpatch-build's compiler
+check always runs. It had been skipped for two released modules,
+AlmaLinux 5.14.0-70.13.1.el9_0 and Rocky 4.18.0-372.16.1.el8_6, the
+second built with gcc 8.5.0-10.1 where the kernel records 8.5.0-4.
+
+To see what that left in the releases, 15 kernels were rebuilt from
+verified packages, those two with the check on, and load-tested (runs 42963914296,
+42963928881 and 42999768571): the two above, and for each distribution
+kernels of 8.3 or 8.4, 8.10, 9.0, 9.8, 10.0, 10.1 and 10.2. Six gave the
+released file bit for bit. The other nine, the two above among them,
+differ from their release in the order the functions were linked and in
+nothing that runs: on 8 and 9 every executable section is the same, and
+on 10, where the functions share one `.text`, every function is. Four of
+the nine were also built with the old `build.sh` (runs 42979961871 and
+42979965851) and gave the same file as the new one.
 
 ## CVE-2026-98432
 
@@ -101,11 +150,12 @@ frees them with a plain `kfree()`: a use after free. Request socket
 migration has the same problem in `tcp_v4_reqsk_destructor()`. The fix
 frees both with `kfree_rcu()`.
 
-Neither distribution has shipped the fix: on 2026-10-27 the newest
-kernels of AlmaLinux and Rocky Linux 8, 9 and 10 did not name the CVE in
-their changelogs, and the sources of 4.18.0-305.3.1.el8_4,
-4.18.0-553.179.1.el8_10, 5.14.0-687.61.1.el9_8 and 6.12.0-211.68.1.el10_2
-still free both pointers with `kfree()`.
+When this repository started, neither distribution had shipped the
+fix: on 2026-10-27 the newest kernels of AlmaLinux and Rocky Linux 8, 9
+and 10 did not name the CVE in their changelogs, and the sources of
+4.18.0-305.3.1.el8_4, 4.18.0-553.179.1.el8_10, 5.14.0-687.61.1.el9_8 and
+6.12.0-211.68.1.el10_2 still freed both pointers with `kfree()`. Both
+ship it now, from the kernels named at the top.
 
 ## CVE-2026-99999
 
@@ -118,7 +168,10 @@ Both distributions now ship kernels with that fix, from
 5.14.0-687.59.1.el9_8 and 6.12.0-211.67.1.el10_2 on. Where a kernel lacks
 it, this repository's module carries the same change as the earlier
 ones, and replaces an earlier module already loaded (tested on each of
-the 665 kernels that had one, above).
+the 665 kernels that had one, above). The other direction loses a fix:
+an earlier module loaded over this one replaces it. The earlier
+repositories' scripts refuse to do that, and `apply` here recovers from
+it.
 
 ## Layout
 
