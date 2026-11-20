@@ -4,12 +4,16 @@
 #
 # Loads the livepatch, checks that it takes effect on vmlinux and, where
 # the kernel lacks CVE-2026-99999's fix, on the three modules that part
-# patches (one loaded before it, two after); probes CVE-2026-99999 before
-# and after; drives the two frees CVE-2026-98432 changes with IP options
-# present (tools/tcpopt.py); then disables and removes it.  With OLDKO=
-# set to the kernel's earlier CVE-2026-99999 module, that one is loaded
-# first, and the new one must replace it; the earlier repository's own
-# script must then refuse to put its module back over the new one, and
+# patches (one loaded before it, two after), and on kvm and its vendor
+# module (loaded after); probes CVE-2026-99999 before and after; drives
+# the two frees CVE-2026-98432 changes with IP options present
+# (tools/tcpopt.py), connections completed through SYN cookies
+# (tools/syncookie.py, CVE-2026-99288) and a KVM guest
+# (tools/kvmrun.py, CVE-2022-3344 and CVE-2026-99312); then disables and
+# removes it.  With OLDKO= set to the kernel's module from
+# nsrg-fmlorg/kpatch-cve-2026-98432, that one is loaded first, and the
+# new one must replace it; with OLDREF= also set, that repository's own
+# script must then refuse to put its module back over the new one; and
 # when that module is loaded all the same, livepatch.sh must recover.
 # Prints "RESULT: PASS" or "RESULT: FAIL" last.
 set -uo pipefail
@@ -34,7 +38,7 @@ wait_transition() {
 if [ "${FROM_RELEASE:-}" = 1 ]; then
 	# No module is copied over: the name is the one livepatch.sh derives.
 	k=$(uname -r)
-	name=livepatch_cve_2026_98432_$(echo "${k%.x86_64}" | tr '.-' '__')
+	name=livepatch_el_r1_$(echo "${k%.x86_64}" | tr '.-' '__')
 else
 	name=$(modinfo -F name "$ko")
 fi
@@ -67,8 +71,8 @@ case $before_csum in
 *"bad=vulnerable"*) [ -n "$need99999" ] || bad "the shipped kernel reproduces CVE-2026-99999, but the port has no fix for it" ;;
 esac
 
-# The kernel's earlier CVE-2026-99999 module, as a host that applied it
-# would have it.
+# The kernel's module from the earlier repository, as a host that
+# applied it would have it.
 oldname=
 if [ -n "${OLDKO:-}" ]; then
 	oldname=$(modinfo -F name "$OLDKO")
@@ -86,7 +90,7 @@ fi
 # the script from GitHub, the module from the release, SHA-256 checked.
 # SCRIPT_REF is the branch whose script is fetched (main unless the
 # workflow runs on another).
-RAW=https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/${SCRIPT_REF:-main}/scripts/livepatch.sh
+RAW=https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-el/${SCRIPT_REF:-main}/scripts/livepatch.sh
 apply_new() {
 	if [ "${FROM_RELEASE:-}" = 1 ]; then
 		curl -fsSL "$RAW" | bash -s -- apply
@@ -103,6 +107,20 @@ apply_new ||
 
 modprobe nfnetlink_queue || bad "modprobe nfnetlink_queue"
 modprobe xt_CHECKSUM || bad "modprobe xt_CHECKSUM"
+# kvm and the vendor module, loaded after the patch.  The vendor module
+# loads only where the VM is given VMX or SVM (-cpu host on a host with
+# nested virtualization).
+modprobe kvm || bad "modprobe kvm"
+kvmvendor=
+case $(grep -m1 -owE 'vmx|svm' /proc/cpuinfo) in
+vmx) kvmvendor=kvm_intel ;;
+svm) kvmvendor=kvm_amd ;;
+esac
+if [ -n "$kvmvendor" ]; then
+	modprobe "$kvmvendor" || bad "modprobe $kvmvendor"
+else
+	echo "note: no VMX or SVM in this VM; the KVM vendor module and guest are not exercised"
+fi
 sleep 2
 
 # Replaced: the earlier patch is no longer enabled (on 4.18 its directory
@@ -124,12 +142,28 @@ for f in inet_sock_destruct tcp_v4_reqsk_destructor; do
 	fi
 done
 
+# CVE-2026-99288: the established-hash lookups and the two refcount
+# fixes, all in vmlinux.
+for f in __inet_lookup_established __inet6_lookup_established tcp_get_cookie_sock tcp_conn_request; do
+	if compgen -G "/sys/kernel/livepatch/$name/vmlinux/$f,*" >/dev/null; then
+		echo "function $f: patched"
+	else
+		bad "function $f not in the livepatch"
+	fi
+done
+# CVE-2022-3344 and CVE-2026-99312: the vCPU reset in kvm.
+if compgen -G "/sys/kernel/livepatch/$name/kvm/kvm_vcpu_reset,*" >/dev/null; then
+	echo "function kvm/kvm_vcpu_reset: patched"
+else
+	bad "function kvm_vcpu_reset not in the livepatch"
+fi
+
 # Each patched object must have its directory.  Where the kernel has a
 # per-object "patched" file (not 4.18), it must read 1; otherwise the
 # modules loaded after the patch must show "applying patch" in dmesg.
 # The old loop skipped objects without the file and so checked nothing
 # on 4.18.
-want=vmlinux
+want="vmlinux kvm $kvmvendor"
 [ -n "$need99999" ] && want="$want nfnetlink_queue xt_CHECKSUM"
 # Read whole, then match: "cmd | grep -q" under pipefail fails when grep
 # stops early and cmd dies of SIGPIPE.
@@ -173,6 +207,17 @@ esac
 tcpopt=$("$PY" "$(dirname "$0")/tcpopt.py" 2000 2>&1); echo "$tcpopt"
 case $tcpopt in *"errors=0"*) ;; *) bad "tcpopt.py reported errors" ;; esac
 
+# CVE-2026-99288: connections made from SYN cookies, over IPv4 and IPv6.
+sc=$("$PY" "$(dirname "$0")/syncookie.py" 200 2>&1); echo "$sc"
+case $sc in *"syncookie: v4=200/200 v6=200/200"*) ;; *) bad "syncookie.py failed" ;; esac
+
+# CVE-2022-3344 and CVE-2026-99312: vCPUs created (reset) and freed under
+# the livepatch.
+if [ -n "$kvmvendor" ]; then
+	kr=$("$PY" "$(dirname "$0")/kvmrun.py" 20 2>&1); echo "$kr"
+	case $kr in *"runs=20 hlt=20"*) ;; *) bad "kvmrun.py failed under the livepatch" ;; esac
+fi
+
 # ip_do_fragment(): a 3000-byte ping over a 1500-byte MTU is fragmented.
 gw=$(ip route | awk '/^default/{print $3; exit}')
 if ping -c 3 -s 3000 -W 2 "$gw" >/dev/null 2>&1; then
@@ -183,9 +228,10 @@ fi
 
 # The earlier repository's script, run on a host that has this module:
 # it must refuse.  Its module is a replace patch as well, and would take
-# CVE-2026-98432's fix away.
-if [ -n "$oldname" ] && [ -n "${OLDREPO:-}" ]; then
-	if curl -fsSL "https://raw.githubusercontent.com/$OLDREPO/${OLDREF:-main}/scripts/livepatch.sh" |
+# the fixes only this module carries away.  Run only when OLDREF names
+# the branch of that repository whose script knows this module.
+if [ -n "$oldname" ] && [ -n "${OLDREPO:-}" ] && [ -n "${OLDREF:-}" ]; then
+	if curl -fsSL "https://raw.githubusercontent.com/$OLDREPO/${OLDREF}/scripts/livepatch.sh" |
 		bash -s -- apply; then
 		bad "the earlier repository's script applied its module over this one"
 	else

@@ -186,7 +186,10 @@ dnf -y builddep "/w/kernel-$NVR.src.rpm" --allowerasing --enablerepo=vault-devel
 	tee /w/builddep.log || true
 grep -E '^No matching package|^No match for' /w/builddep.log > "$OUT/builddep-missing.txt" || true
 
-NAME=livepatch_cve_2026_98432_${NVR//[.-]/_}
+# r1: the set of fixes in patches/.  A host replaces one module with the
+# next, and a loaded module's name cannot be loaded again, so the
+# revision goes up whenever a fix is added.
+NAME=livepatch_el_r1_${NVR//[.-]/_}
 # pin_gcc <version-release as the kernel records it, e.g. 11.5.0-11>
 #
 # A minor's repositories can carry gcc updates released after its GA
@@ -308,12 +311,12 @@ build_kpatch() {
 	# patches/<distro>/kpatch/ holds the same change with
 	# ip_check_csum_start() moved out of include/net/ip.h; see
 	# tools/kpatchify.py.
-	cp "/w/patches/$DISTRO/kpatch/$NVR.diff" "$OUT/cve-2026-98432.diff"
+	cp "/w/patches/$DISTRO/kpatch/$NVR.diff" "$OUT/fixes.diff"
 	local rc=0
 	# kpatch-build takes the kernel version from the SRPM's file name and
 	# refuses -a alongside -r.
 	kpatch-build -j"$(nproc)" -r "/w/kernel-$NVR.src.rpm" -v "$VMLINUX" \
-		-n "$NAME" -o "$OUT" "$OUT/cve-2026-98432.diff" || rc=$?
+		-n "$NAME" -o "$OUT" "$OUT/fixes.diff" || rc=$?
 	cp ~/.kpatch/build.log "$OUT/build.log" 2>/dev/null || true
 	# Functions kpatch-build picked up, including ones pulled in because
 	# an inlined caller changed.
@@ -377,10 +380,10 @@ build_klp() {
 	rel=$(make -s kernelrelease)
 	[ "$rel" = "$KVER" ] || { echo "kernelrelease $rel != $KVER"; return 1; }
 
-	cp "/w/patches/$DISTRO/$NVR.diff" "$OUT/cve-2026-98432.diff"
+	cp "/w/patches/$DISTRO/$NVR.diff" "$OUT/fixes.diff"
 	local rc=0
 	./scripts/livepatch/klp-build -T -j"$(nproc)" -o "$OUT/$NAME.ko" \
-		"$OUT/cve-2026-98432.diff" > "$OUT/build.log" 2>&1 || rc=$?
+		"$OUT/fixes.diff" > "$OUT/build.log" 2>&1 || rc=$?
 	cp klp-tmp/diff/diff.log "$OUT/diff.log" 2>/dev/null || true
 	cp .objtool-split/crash-*.txt "$OUT/" 2>/dev/null || true
 	if [ -d .objtool-split ]; then

@@ -33,8 +33,7 @@ almalinux)
 		BASE=https://repo.almalinux.org/almalinux/$MINOR
 	PKGS=$BASE/BaseOS/$ARCH/os/Packages
 	img=AlmaLinux-$MAJOR-GenericCloud-latest.$ARCH.qcow2
-	imgurl=https://repo.almalinux.org/almalinux/$MAJOR/cloud/$ARCH/images/$img
-	OLDREPO=nsrg-fmlorg/kpatch-alma-cve-2026-99999 ;;
+	imgurl=https://repo.almalinux.org/almalinux/$MAJOR/cloud/$ARCH/images/$img ;;
 rocky)
 	BASE=https://dl.rockylinux.org/vault/rocky/$MINOR
 	curl -sfo /dev/null "$BASE/BaseOS/$ARCH/os/repodata/repomd.xml" ||
@@ -42,8 +41,7 @@ rocky)
 	PKGS=$BASE/BaseOS/$ARCH/os/Packages/k
 	curl -sfo /dev/null "$PKGS/" || PKGS=$BASE/BaseOS/$ARCH/os/Packages
 	img=Rocky-$MAJOR-GenericCloud-Base.latest.$ARCH.qcow2
-	imgurl=https://dl.rockylinux.org/pub/rocky/$MAJOR/images/$ARCH/$img
-	OLDREPO=nsrg-fmlorg/kpatch-rocky-cve-2026-99999 ;;
+	imgurl=https://dl.rockylinux.org/pub/rocky/$MAJOR/images/$ARCH/$img ;;
 *) echo "unknown distribution $DISTRO"; exit 2 ;;
 esac
 # --http1.1 --retry: the cloud image download died mid-way with curl
@@ -71,11 +69,12 @@ for p in kernel kernel-core kernel-modules kernel-modules-core kernel-modules-ex
 done
 ls "$W/rpms"
 
-# The CVE-2026-99999 module this kernel had from the earlier repository,
-# if it had one: the guest loads it first, and the new module must
-# replace it (kpatch-build and klp-build both build replace patches).
-OLDKO=livepatch_cve_2026_99999_$(echo "$NVR" | tr '.-' '__').ko
-if curl -sfL -o "$W/$OLDKO" "https://github.com/$OLDREPO/releases/download/v$NVR/$OLDKO"; then
+# The module this kernel had from nsrg-fmlorg/kpatch-cve-2026-98432, if
+# it had one: the guest loads it first, and the new module must replace
+# it (kpatch-build and klp-build both build replace patches).
+OLDREPO=nsrg-fmlorg/kpatch-cve-2026-98432
+OLDKO=livepatch_cve_2026_98432_$(echo "$NVR" | tr '.-' '__').ko
+if curl -sfL -o "$W/$OLDKO" "https://github.com/$OLDREPO/releases/download/$DISTRO-$NVR/$OLDKO"; then
 	echo "earlier module: $OLDKO ($(sha256sum "$W/$OLDKO" | cut -d' ' -f1))"
 else
 	rm -f "$W/$OLDKO"
@@ -123,7 +122,7 @@ vm() { "${SSH[@]}" "$@"; }
 put() { scp -i "$W/key" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@" t@127.0.0.1:; }
 
 boot 1
-put "$W"/rpms/*.rpm "$KO" "$HERE/loadtest-guest.sh" "$HERE/csum-probe.sh" "$HERE/csum-inject.py" "$HERE/tcpopt.py" "$HERE/../scripts/livepatch.sh" "$HERE/loadtest-bootinfo.sh" "$HERE/loadtest-bootprep.sh"
+put "$W"/rpms/*.rpm "$KO" "$HERE/loadtest-guest.sh" "$HERE/csum-probe.sh" "$HERE/csum-inject.py" "$HERE/tcpopt.py" "$HERE/syncookie.py" "$HERE/kvmrun.py" "$HERE/../scripts/livepatch.sh" "$HERE/loadtest-bootinfo.sh" "$HERE/loadtest-bootprep.sh"
 [ -f "$W/$OLDKO" ] && put "$W/$OLDKO"
 vm "sudo rpm -ivh --oldpackage --nodeps --force ~/kernel*.rpm && sudo grubby --set-default /boot/vmlinuz-$KVER"
 # The image's own command line has console=ttyS0; the installed kernel's

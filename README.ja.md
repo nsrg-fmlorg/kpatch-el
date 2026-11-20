@@ -1,187 +1,107 @@
-# AlmaLinux・Rocky Linux 向け CVE-2026-98432 の kpatch livepatch
+# AlmaLinux と Rocky Linux の全部入り kpatch livepatch
 
 [English](README.md)
 
-AlmaLinux と Rocky Linux の 8・9・10 (x86_64) で、動いているホストの
-CVE-2026-98432 を再起動なしで直す livepatch モジュールです。CVE-2026-99999
-の修正も入っていないカーネルでは、同じモジュールがそちらも直します。
-カーネルにどちらが欠けていても、ホストに要るモジュールは一つです。
+AlmaLinux と Rocky Linux 8・9・10 (x86_64) のカーネルごとに一つの
+livepatch モジュールで、下の直しのうちそのカーネルに無いものを全部入れて
+います。モジュールは置き換え型で、新しいものを読み込むと前のものと
+入れ替わります。そのため直しは CVE ごとに分けず、一つのモジュールに
+まとめています。
+
+まだモジュールは公開していません。最初のカーネル Rocky Linux
+4.18.0-553.180.1.el8_10 をビルドして試験しているところで、それが通って
+から他のカーネルに広げます。
+
+| CVE | 内容 | upstream の直し |
+|---|---|---|
+| CVE-2026-98432 | TCP の request socket と子 socket の IP オプションの解放後使用 | e3f33b0a1d89 |
+| CVE-2026-99999 | 「PwnEscape」: 細工した checksum_start で、checksum の処理が解析済みの IPv4 ヘッダを上書きする。直しの無いカーネルだけ | |
+| CVE-2026-99288 | 「NoisyTCP」: ロックなしの established 検索がハッシュから外れた socket を受け入れ、遠隔からカーネルを落とせる | 4e2b3ef19e0e |
+| CVE-2022-3344 | KVM の nested SVM: L2 の実行中に vCPU をリセットすると、ホストが落ちる | 917401f26a6a, 16ae56d7e052, f9697df25143, ed129ec9057f, 05311ce954ae |
+| CVE-2026-99312 | KVM: L2 の実行中の INIT の後に古い MMU の状態が残る | c7c288d178cb |
+
+KVM の二つが効くのは、nested 仮想化を有効にした AMD のホスト
+(`kvm_amd nested=1`) です。9 と 10 には CVE-2022-3344 の直しが既に
+入っており、CVE-2026-99312 はその直しが開いた経路を塞ぐものなので、
+8 には両方を入れます。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-cve-2026-98432/main/scripts/livepatch.sh | sudo bash -s -- apply
+curl -fsSL https://raw.githubusercontent.com/nsrg-fmlorg/kpatch-el/main/scripts/livepatch.sh | sudo bash -s -- apply
 ```
 
-スクリプトは動いているカーネル (`uname -r`) と、それを作った配布元に合う
-モジュールを選びます (配布元は `kernel-core` パッケージに記録された vendor で
-見ます。配布元を乗り換えたホストでも、今動いているカーネルに合うものが選ばれます)。
-公開したモジュールが無いカーネルは断り、何も変えません。`apply` の代わりに `check` なら
-確かめるだけで、`status` と `remove` で状態の表示と取り消しができます。
-livepatch は再起動で消えます。CVE-2026-98432 の修正は、配布元の changelog では
-4.18.0-553.182.1.el8_10、5.14.0-687.64.1.el9_8、6.12.0-211.72.1.el10_2 から
-載っています (2026-11-06 に確認)。
-
-## 対象カーネル
-
-686 本です。AlmaLinux が 381 本、Rocky Linux が 305 本で、8.3 から 10.2 まで、
-`tools/kernels.tsv` に並べてあります。配布元のミラー (vault を含む) に SRPM と
-debuginfo の両方がある全カーネルで、x86_64 だけです。Rocky の
-5.14.0-611.41.1.el9_7 は、debuginfo がどのミラーにも無いので外しています。
-前の Rocky の repo に入っていなかった Rocky の 8.3 のカーネル
-4.18.0-240.22.1.el8 と、前の repo の後に両配布元が出したカーネル
-(4.18.0-553.181.1.el8_10 (AlmaLinux)、553.180.1 (Rocky)、5.14.0-687.61.1.el9_8、
-6.12.0-211.69.1.el10_2 まで) も入っています。AlmaLinux 10 の x86_64_v2 版は
-対象外です。
-
-686 本のうち 666 本は CVE-2026-99999 の修正も入っておらず、モジュールが両方を
-持ちます。残りの 20 本は修正済みで (AlmaLinux 4.18.0-553.177.1.el8_10 と
-Rocky 553.178.1.el8_10、両方の 5.14.0-687.59.1.el9_8 と 6.12.0-211.67.1.el10_2
-から後)、モジュールは CVE-2026-98432 の変更だけを持ちます。
-
-## 試したこと
-
-どのモジュールも CI で組み、出荷カーネルを起こした VM で `scripts/livepatch.sh`
-を使って当てました (`tools/loadtest.sh`)。2026-10-31、配布元とマイナーごとに
-1 回、全部で 40 回で、その時点の 684 本すべて `RESULT: PASS` でした。その後、
-公開したものを 1 行の手順で当てる試験 (2026-11-02、40 回) も全部通りました。
-AlmaLinux 553.181.1 と Rocky 553.180.1 は 2026-11-06 に両方を通しました
-(run 42066544047、42081208786)。それぞれで次を
-確かめています。
-
-- vmlinux の差し替えた関数に、`inet_sock_destruct` と
-  `tcp_v4_reqsk_destructor` が並ぶ。
-- IP オプションを付けたソケットからの loopback の TCP 接続 2,000 本と、raw
-  ソケットからの IP オプション付きの SYN だけ 2,000 本を、エラーもカーネルの
-  警告も無く通した (`tools/tcpopt.py`)。修正が変える二つの解放を、オプションが
-  ある状態で通すためのものです。IP オプションが無いと、どちらも NULL しか
-  解放しません。
-- モジュールが CVE-2026-99999 の分を持つカーネルでは、それが vmlinux、
-  `nfnetlink_queue`、`xt_CHECKSUM` (9 と 10 では `nf_conntrack_bridge` も)
-  に効いている。8 と 9 (511 本と、Rocky の 8.3) では、細工したフレームを
-  出荷カーネルは断片化し、モジュールを当てると捨てた。10 (154 本) では
-  フレームが欠陥の手前で弾かれるので、この突きではどちらとも言えません。
-- 前の repo のモジュールがあった 665 本では、それを先に読み込み、新しい
-  モジュールが置き換えた。前のパッチは無効になり、そのモジュールは外れた。
-- 最後にモジュールを無効にして外した。
-
-2026-11-11 に `scripts/livepatch.sh` を直し、14 本のカーネルで公開済みの
-モジュールをもう一度当てました。配布元ごとに 7 本で、8.3 か 8.4、8.10、9.0、
-9.8、10.0、10.2 から取り、うち 12 本は前の repo にモジュールがあるものです
-(run 42963197753、42963213064)。すべて `RESULT: PASS` でした。この回で新しく
-確かめたことは次のとおりです。
-
-- まだ何も入れていないホストで `check` が通り、モジュールは `apply` が取って
-  くると表示する。以前はファイルが無いために失敗していました。
-- 読み込みの前にカーネルのログへ書かれた `WARNING` では `apply` が失敗しない。
-  以前はログ全体を探していたので、古い警告があるとパッチが有効なまま
-  `apply` が 1 で終わっていました。
-- 前のモジュールがある 12 本では、このモジュールが当たっている間、前の repo の
-  スクリプトが自分のモジュールを読み込まない。以前は読み込んでしまい、
-  CVE-2026-98432 の修正が外れていました。
-- そのうえで前のモジュールを手で読み込み、このモジュールがパッチの無いまま
-  カーネルに残る状態を作った。`apply` はそれを外して読み込み直した。
-
-カーネルの vendor でモジュールを選ぶ処理は 14 本すべてで動きましたが、どれも
-自分の配布元の上です。配布元を乗り換えたホストでは試していません。
-
-試していないこと: 競合そのものです。CVE-2026-98432 が出荷カーネルで起き、
-モジュールで起きなくなることを見せるには、KASAN と、SYN の再送と子ソケットの
-解放をわざと重ねる手立てが要り、この VM では狙って起こせません。Secure Boot を
-有効にした状態 (署名の無いモジュールなので断られます) と、`kpatch.service` に
-よる起動時の読み込みも試していません。
+スクリプトは動いているカーネル (`uname -r`) のモジュールを選びます。
+公開したモジュールの無いカーネルでは断り、何も変えません。`check`・
+`status`・`remove` で、確認・表示・取り外しをします。
+nsrg-fmlorg/kpatch-cve-2026-98432、kpatch-alma-cve-2026-99999、
+kpatch-rocky-cve-2026-99999 のモジュールが既に読み込まれていれば、
+置き換えて取り外します。livepatch は再起動すると消えます。
 
 ## 移植の作り方
 
-`tools/mkdiffs.sh` がマイナーの全カーネルの SRPM を移植します。まず SRPM
-自身の当て物を、`%prep` と同じように tarball に当てます (`tools/prep.py`)。
-AlmaLinux は自分の修正をこの形で持っていて、4.18.0-553.177.1.el8_10 の
-CVE-2026-99999 の修正もその一つです。10.2 の 6.12.0-211.69.1 は Red Hat の
-211.56.1 の tarball に当て物 466 本を重ねたものなので、tarball だけを見て
-作った移植はカーネルが持つものを見落とします。そのうえで変更行を
-`tools/ref/` と照らします。CVE-2026-98432 の分は上流と同じであること、
-CVE-2026-99999 の分は 8 と 9 では AlmaLinux の当て物、10 では上流と同じで
-あるか、修正済みのカーネルでは無いことです。kpatch-build に渡す形
-(`tools/kpatchify.py`) も、同じように `tools/ref/99999-kpatch/` と照らします。
-686 本すべて一致しました。ミラーの一覧が読めないときや SRPM が一つも無いときは
-止まります。以前は何も見ないまま成功を返していました。
-`tools/port.py` は、そのカーネルの `kfree_rcu()` が NULL を飛ばさない形なら
-止まります。どちらのポインタも普段は NULL だからです。
+CVE-2026-98432 と CVE-2026-99999 の分は、kpatch-cve-2026-98432 のために
+作った移植 (`tools/mkdiffs.sh`、下) です。残りの三つは upstream の変更を
+カーネルのソースと突き合わせて、後ろにつないでいます。
 
-8 と 9 は kpatch-build、10 はカーネル自身の klp-build で組みます。どちらも
-置き換え型のパッチを作り、それによって前のモジュールと入れ替わります。
+4.18.0-553.180.1.el8_10 では、KVM の変更と NoisyTCP の検索の変更は
+upstream のものがそのまま当たります。NoisyTCP は `tcp_conn_request()` の
+Fast Open の失敗の経路の参照カウントも直しますが、upstream のこの変更は、
+`tcp_disconnect()` が request の参照を既に一つ落としているコードを前提に
+書かれています。EL8 は 4.18.0-553.87.1.el8_10 で Red Hat が
+CVE-2025-39955 の直し (RHEL-120664) を入れてから同じ形になっており、
+upstream の hunk がそのまま当たります。それより前の EL8 のカーネルは、
+この経路でまだ `reqsk_fastopen_remove()` を呼んでいて別の書き方が要り、
+まだ一つも対象にしていません。upstream の request socket の移し替えの
+変更は、8 には当てる先がありません。
 
-`build.sh` はカーネルの SRPM と debuginfo、それにコンパイラを、配布元のミラーと
-vault から取ります。2026-11-11 からは、その署名を配布元のコンテナイメージに
-入っている鍵で確かめます。公開済みのモジュールはそれより前に、誰も検証して
-いないパッケージから組んだものです。コンパイラはカーネルが記録している版を
-使い、そのマイナーにもう無ければ別のマイナーから取ります。kpatch-build の
-コンパイラ検査は必ず走らせます。公開済みのうち AlmaLinux
-5.14.0-70.13.1.el9_0 と Rocky 4.18.0-372.16.1.el8_6 の 2 本は、この検査を
-飛ばして組んでいました。後者はカーネルの記録が gcc 8.5.0-4 のところを
-8.5.0-10.1 で組んでいます。
+`tools/mkdiffs.sh` は、SRPM 自身のパッチを `%prep` と同じように tarball に
+当ててから (`tools/prep.py`)、minor の全カーネルに CVE-2026-98432 を移植し、
+変えた行を `tools/ref/` と突き合わせます。
 
-それが公開物に何を残したかを見るため、15 本を検証済みのパッケージから組み直し
-(上の 2 本は検査を有効にして)、読み込みテストを通しました (run 42963914296、42963928881、
-42999768571)。上の 2 本と、配布元ごとに 8.3 か 8.4、8.10、9.0、9.8、10.0、
-10.1、10.2 のカーネルです。6 本は公開したファイルと 1 bit も違いません。
-上の 2 本を含む残りの 9 本は、関数をリンクした順が公開物と違うだけで、
-実行される部分は同じでした。8 と 9 では実行セクションがすべて一致し、関数が
-一つの `.text` にまとまる 10 では関数がすべて一致します。9 本のうち 4 本は
-古い `build.sh` でも組み (run 42979961871、42979965851)、新しいものと同じ
-ファイルになりました。
+8 と 9 は kpatch-build、10 はカーネル自身の klp-build でビルドし、どちらも
+置き換え型のパッチを作ります。`build.sh` は配布元から取る SRPM・debuginfo・
+コンパイラの署名を確かめ、カーネルが記録している gcc でビルドします。
 
-## CVE-2026-98432
+## 試験していること
 
-上流の修正は torvalds/linux e3f33b0a1d89 "ipv4: free inet_opt and ireq_opt
-after an RCU grace period" です。SYN が IP オプションを持っていると、待ち受け
-側はそれを接続要求のソケットに (`ireq_opt`) 取っておき、子ソケットに写さずに
-そのまま渡します (`inet_opt`)。同じ要求への SYN の再送に、別の CPU が RCU の
-下でそのオプションを読みながら SYN-ACK を返しているところへ、子ソケットが
-閉じられて `inet_sock_destruct()` が素の `kfree()` で解放すると、解放後の
-メモリを使うことになります。要求ソケットの移し替えでも
-`tcp_v4_reqsk_destructor()` に同じ問題があります。修正は両方を `kfree_rcu()`
-で解放するものです。
+`.github/workflows/build.yml` がモジュールをビルドし、配布されたカーネルを
+VM で起動します (`tools/loadtest.sh`)。VM の中で
+`tools/loadtest-guest.sh` が、まず kpatch-cve-2026-98432 のそのカーネルの
+モジュールを読み込み、その上にこのモジュールを `scripts/livepatch.sh` で
+当てて、次を確かめます。
 
-この repository を始めた時点では、どちらの配布元も修正を出していません
-でした。2026-10-27 の時点で、AlmaLinux と Rocky Linux の 8・9・10 の最新
-カーネルは changelog にこの CVE を挙げておらず、4.18.0-305.3.1.el8_4、
-4.18.0-553.179.1.el8_10、5.14.0-687.61.1.el9_8、6.12.0-211.68.1.el10_2 の
-ソースは、どちらのポインタも `kfree()` で解放したままでした。今はどちらも、
-冒頭に挙げたカーネルから修正を出しています。
-
-## CVE-2026-99999
-
-こちらは先に、配布元ごとに
-[nsrg-fmlorg/kpatch-alma-cve-2026-99999](https://github.com/nsrg-fmlorg/kpatch-alma-cve-2026-99999)
-と
-[nsrg-fmlorg/kpatch-rocky-cve-2026-99999](https://github.com/nsrg-fmlorg/kpatch-rocky-cve-2026-99999)
-で直しました。今はどちらの配布元も修正の入ったカーネルを出しています。
-4.18.0-553.177.1.el8_10 (AlmaLinux) または 553.178.1.el8_10 (Rocky)、
-5.14.0-687.59.1.el9_8、6.12.0-211.67.1.el10_2 から後の版です。修正の無い
-カーネルでは、この repo のモジュールが前のものと同じ変更を持ち、すでに
-読み込まれている前のモジュールと置き換わります (前のモジュールがあった
-665 本のそれぞれで試しました。上記)。逆向きでは修正が一つ外れます。この
-モジュールの上に前のモジュールを読み込むと、そちらが置き換えるためです。
-前の repo のスクリプトはそれを断り、ここの `apply` はその状態から戻します。
+- 前のモジュールが置き換えられ、取り外されること
+- 変えた関数が vmlinux と `kvm` の livepatch に入っていること、後から
+  読み込んだ `kvm` とベンダーのモジュールに読み込み時に当たること
+- IP オプション付きの TCP 接続 2000 本が開いて閉じること
+  (`tools/tcpopt.py`)、SYN cookie で確立した IPv4 と IPv6 の接続各 200 本で
+  送受信できること (`tools/syncookie.py`)
+- VM に VMX か SVM がある場合、KVM のゲストを作り、HLT まで走らせ、
+  解放できること (`tools/kvmrun.py`)
+- 前のモジュールを上から読み込まれても `apply` で戻せること、`remove` で
+  全部外れること、その間に BUG・Oops・WARNING が出ないこと
 
 ## 構成
 
-| パス | 中身 |
+| パス | 内容 |
 |---|---|
-| `build.sh` | 配布元のコンテナの中で、一つのカーネルのモジュールを組む |
-| `tools/kernels.tsv` | CI が組むカーネル。配布元、マイナー、カーネルの版 |
-| `tools/select-kernels.py` | CI の一回の実行がそのうちどれを取るか |
-| `tools/mkdiffs.sh` | マイナーの全カーネルの移植を作り、`tools/ref/` と照らす |
-| `tools/prep.py` | 移植の前に、SRPM 自身の当て物を `%prep` と同じように tarball に当てる |
-| `tools/port.py` | 変更そのもの。カーネルの木に当てる |
-| `tools/kpatchify.py` | 移植を kpatch-build に渡す形に直す |
+| `build.sh` | 配布元のコンテナで、一つのカーネルのモジュールをビルドする |
+| `patches/<distro>/<nvr>.diff`、`patches/<distro>/kpatch/<nvr>.diff` | 一つのカーネルの直し。klp-build 用と kpatch-build 用 |
+| `tools/kernels.tsv` | CI がビルドするカーネル: 配布元、minor、カーネルのバージョン |
+| `tools/select-kernels.py` | CI の一回でどれを取るか |
+| `tools/mkdiffs.sh` | minor の全カーネルに CVE-2026-98432 を移植し、`tools/ref/` と突き合わせる |
+| `tools/prep.py` | 移植の前に、SRPM 自身のパッチを `%prep` と同じように tarball に当てる |
+| `tools/port.py` | CVE-2026-98432 の変更をカーネルのツリーに当てる |
+| `tools/kpatchify.py` | 移植を kpatch-build に渡す形にする |
 | `tools/klp-overlay.sh`、`tools/klp-overlay-lds.py`、`tools/klp-overlay/` | 10.2 の klp-build を 10.0 と 10.1 に貸す |
-| `tools/klpsymcheck.py` | klp-build のモジュールのシンボルを出荷カーネルと照らす |
-| `tools/loadtest.sh`、`tools/loadtest-guest.sh`、`tools/loadtest-bootprep.sh`、`tools/loadtest-bootinfo.sh` | 出荷カーネルを VM で起こし、モジュールを当てて確かめ、外す |
-| `tools/csum-probe.sh`、`tools/csum-inject.py` | CVE-2026-99999 を当てる前と後で突く |
-| `tools/tcpopt.py` | CVE-2026-98432 が変える二つの解放を、IP オプションのある状態で通す |
-| `tools/doccheck.py` | どちらかの README に名前の無いファイルや、壊れたリンクがあると落ちる |
-| `scripts/livepatch.sh` | ホストで公開モジュールを当てる、確かめる、外す |
-| `scripts/build-local.sh` | 一つのカーネルのモジュールを手元で組んで読み込みテストする |
-| `.github/workflows/diffs.yml` | 両方の配布元の全マイナーで `tools/mkdiffs.sh` を走らせる |
-| `.github/workflows/build.yml` | モジュールを組んで読み込みテストする |
+| `tools/klpsymcheck.py` | klp-build のモジュールのシンボルを、配布されたカーネルと突き合わせる |
+| `tools/loadtest.sh`、`tools/loadtest-guest.sh`、`tools/loadtest-bootprep.sh`、`tools/loadtest-bootinfo.sh` | 配布されたカーネルを VM で起動し、モジュールを当て、確かめ、外す |
+| `tools/csum-probe.sh`、`tools/csum-inject.py` | CVE-2026-99999 を当てる前と後で調べる |
+| `tools/tcpopt.py` | CVE-2026-98432 で変わる二つの解放を、IP オプション付きで通す |
+| `tools/syncookie.py` | SYN cookie で確立する接続 (CVE-2026-99288) |
+| `tools/kvmrun.py` | KVM のゲストを作り、走らせ、解放する (CVE-2022-3344、CVE-2026-99312) |
+| `tools/doccheck.py` | 両方の README に名前の無いファイルや、切れたリンクがあれば落ちる |
+| `scripts/livepatch.sh` | ホストで、公開したモジュールを当て、確かめ、外す |
+| `scripts/build-local.sh` | 一つのカーネルのモジュールを手元の機械でビルドし、試験する |
+| `.github/workflows/diffs.yml` | 両方の配布元の全 minor で `tools/mkdiffs.sh` を走らせる |
+| `.github/workflows/build.yml` | モジュールをビルドし、試験する |
 | `.github/workflows/docs.yml` | `tools/doccheck.py` を走らせる |

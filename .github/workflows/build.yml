@@ -1,17 +1,12 @@
 name: build-and-load
 
+# By hand only: a build is an hour per kernel.
 on:
-  push:
-    branches: [main]
-    # Only what changes a module.  A change to the load test alone is run
-    # by hand against an earlier build (build_run_id).
-    paths: ['build.sh', 'patches/**', 'tools/port.py', 'tools/kpatchify.py',
-            'tools/klp-overlay*', 'tools/klp-overlay/**', 'tools/klpsymcheck.py']
   workflow_dispatch:
     inputs:
       kernels:
         description: 'minors / kernel versions separated by commas, each optionally prefixed with "almalinux:" or "rocky:" (e.g. rocky:10.2,9.0); "all" is over 256 kernels and refused'
-        default: 'rocky:10.2'
+        default: 'rocky:4.18.0-553.180.1.el8_10'
       build_run_id:
         description: load-test the modules of this earlier run instead of building
         required: false
@@ -21,8 +16,8 @@ on:
         type: boolean
         default: false
       old_ref:
-        description: branch of the earlier CVE-2026-99999 repositories whose livepatch.sh must refuse
-        default: main
+        description: branch of nsrg-fmlorg/kpatch-cve-2026-98432 whose livepatch.sh must refuse to replace this module (empty to skip)
+        default: ''
 
 permissions:
   actions: read
@@ -33,8 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Which kernels: on a push, those the change can affect
-  # (tools/select-kernels.py); by hand, a list.  GitHub allows at most 256
+  # Which kernels (tools/select-kernels.py).  GitHub allows at most 256
   # jobs per matrix, so large sets are dispatched per minor.
   matrix:
     runs-on: ubuntu-latest
@@ -46,20 +40,9 @@ jobs:
           fetch-depth: 0
       - id: m
         env:
-          EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
           KERNELS: ${{ inputs.kernels }}
         run: |
-          if [ "$EVENT" = push ]; then
-            if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-              changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
-            else
-              changed=build.sh
-            fi
-            include=$(python3 -I tools/select-kernels.py changed $changed)
-          else
-            include=$(python3 -I tools/select-kernels.py "$KERNELS")
-          fi
+          include=$(python3 -I tools/select-kernels.py "$KERNELS")
           n=$(python3 -I -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$include")
           [ "$n" -le 256 ] || { echo "$n kernels; dispatch per minor (at most 256 per run)"; exit 1; }
           echo "include=$include" | tee -a "$GITHUB_OUTPUT"
@@ -149,6 +132,10 @@ jobs:
           sudo apt-get install -y -q qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
           sudo chmod 666 /dev/kvm
           mkdir -p images
+      # tools/kvmrun.py on the runner itself, so that a failure inside the
+      # VM can be told apart from a fault in the script.
+      - name: KVM guest on the runner
+        run: python3 -I tools/kvmrun.py 3
       - name: Load test
         env:
           DISTRO: ${{ matrix.distro }}
@@ -156,7 +143,7 @@ jobs:
           NVR: ${{ matrix.nvr }}
           FROM_RELEASE: ${{ inputs.from_release && '1' || '' }}
           SCRIPT_REF: ${{ github.ref_name }}
-          OLDREF: ${{ inputs.old_ref || 'main' }}
+          OLDREF: ${{ inputs.old_ref }}
         run: |
           if [ -n "$FROM_RELEASE" ]; then
             # The guest fetches the script and the module from GitHub;
