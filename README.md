@@ -76,8 +76,9 @@ loads the kernel's module from kpatch-cve-2026-98432 first, applies this
 one over it with `scripts/livepatch.sh`, and checks that:
 
 - the earlier module is replaced and unloaded;
-- the changed functions are in the livepatch, in vmlinux and in `kvm`,
-  and `kvm` and its vendor module loaded afterwards are patched on load;
+- the changed functions are in the livepatch, and the changed ones of
+  `kvm` and, on AMD, `kvm_amd` are redirected, both in the modules the
+  boot loaded before the patch and after loading them again under it;
 - 2000 TCP connections with IP options open and close
   (`tools/tcpopt.py`), and 200 connections each over IPv4 and IPv6 that
   are completed through SYN cookies send and receive

@@ -107,9 +107,10 @@ apply_new ||
 
 modprobe nfnetlink_queue || bad "modprobe nfnetlink_queue"
 modprobe xt_CHECKSUM || bad "modprobe xt_CHECKSUM"
-# kvm and the vendor module, loaded after the patch.  The vendor module
-# loads only where the VM is given VMX or SVM (-cpu host on a host with
-# nested virtualization).
+# kvm and the vendor module.  Where the VM is given VMX or SVM (-cpu host
+# on a host with nested virtualization) the boot has loaded both already,
+# so the patch was applied to them as it was enabled; they are unloaded
+# and loaded again further down.
 modprobe kvm || bad "modprobe kvm"
 kvmvendor=
 case $(grep -m1 -owE 'vmx|svm' /proc/cpuinfo) in
@@ -163,7 +164,9 @@ fi
 # modules loaded after the patch must show "applying patch" in dmesg.
 # The old loop skipped objects without the file and so checked nothing
 # on 4.18.
-want="vmlinux kvm $kvmvendor"
+# Nothing in kvm_intel changes, so it is no object of the livepatch.
+want="vmlinux kvm"
+[ "$kvmvendor" = kvm_amd ] && want="$want kvm_amd"
 [ -n "$need99999" ] && want="$want nfnetlink_queue xt_CHECKSUM"
 # Read whole, then match: "cmd | grep -q" under pipefail fails when grep
 # stops early and cmd dies of SIGPIPE.
@@ -181,6 +184,8 @@ for obj in $want; do
 	elif [ "$obj" = vmlinux ]; then
 		[[ "$msgs" == *"livepatch: '$name': patching complete"* ]] &&
 			echo "object vmlinux: patching complete" || bad "vmlinux: no 'patching complete'"
+	elif [[ $obj == kvm* ]]; then
+		echo "object $obj: present (its functions are checked by kvm_hooked)"
 	elif [ "$obj" != nf_conntrack_bridge ]; then
 		[[ "$msgs" == *"applying patch '$name' to loading module '$obj'"* ]] &&
 			echo "object $obj: applied on load" || bad "$obj: no 'applying patch' message"
@@ -213,10 +218,43 @@ case $sc in *"syncookie: v4=200/200 v6=200/200"*) ;; *) bad "syncookie.py failed
 
 # CVE-2022-3344 and CVE-2026-99312: vCPUs created (reset) and freed under
 # the livepatch.
-if [ -n "$kvmvendor" ]; then
+# The sysfs directories are there whether or not a module is patched, and
+# 4.18 has no "patched" file.  ftrace lists what is really redirected, with
+# "I" (IPMODIFY) on a livepatched function.
+tracing=/sys/kernel/debug/tracing
+[ -e $tracing/enabled_functions ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+kvm_hooked() {
+	local f fns="kvm_vcpu_reset" ef
+	[ "$kvmvendor" = kvm_amd ] && fns="$fns svm_vcpu_free svm_free_nested"
+	ef=$(cat $tracing/enabled_functions)
+	for f in $fns; do
+		if grep -E "^$f \[kvm(_amd)?\] .* I" <<<"$ef"; then
+			echo "$1: $f redirected"
+		else
+			bad "$1: $f not redirected"
+		fi
+	done
+}
+kvm_guest() {
+	[ -n "$kvmvendor" ] || return 0
 	kr=$("$PY" "$(dirname "$0")/kvmrun.py" 20 2>&1); echo "$kr"
-	case $kr in *"runs=20 hlt=20"*) ;; *) bad "kvmrun.py failed under the livepatch" ;; esac
-fi
+	case $kr in *"runs=20 hlt=20"*) ;; *) bad "$1: kvmrun.py failed under the livepatch" ;; esac
+}
+kvm_hooked "kvm as found"
+kvm_guest "kvm as found"
+# The load path: both modules again, with the livepatch enabled.
+[ -z "$kvmvendor" ] || modprobe -r "$kvmvendor" || bad "modprobe -r $kvmvendor"
+if [ -d /sys/module/kvm ]; then modprobe -r kvm || bad "modprobe -r kvm"; fi
+modprobe kvm || bad "modprobe kvm again"
+[ -z "$kvmvendor" ] || modprobe "$kvmvendor" || bad "modprobe $kvmvendor again"
+msgs=$(dmesg)
+for obj in kvm kvm_amd; do
+	[ $obj = kvm ] || [ "$kvmvendor" = kvm_amd ] || continue
+	[[ "$msgs" == *"applying patch '$name' to loading module '$obj'"* ]] &&
+		echo "object $obj: applied on load" || bad "$obj: no 'applying patch' message"
+done
+kvm_hooked "kvm reloaded"
+kvm_guest "kvm reloaded"
 
 # ip_do_fragment(): a 3000-byte ping over a 1500-byte MTU is fragmented.
 gw=$(ip route | awk '/^default/{print $3; exit}')
