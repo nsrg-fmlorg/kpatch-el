@@ -242,19 +242,43 @@ kvm_guest() {
 }
 kvm_hooked "kvm as found"
 kvm_guest "kvm as found"
-# The load path: both modules again, with the livepatch enabled.
-[ -z "$kvmvendor" ] || modprobe -r "$kvmvendor" || bad "modprobe -r $kvmvendor"
-if [ -d /sys/module/kvm ]; then modprobe -r kvm || bad "modprobe -r kvm"; fi
-modprobe kvm || bad "modprobe kvm again"
-[ -z "$kvmvendor" ] || modprobe "$kvmvendor" || bad "modprobe $kvmvendor again"
+# The load path: the modules loaded for the first time under the
+# livepatch, so it is taken off, they are unloaded, and it goes on again.
+kvm_unload() {
+	[ -z "$kvmvendor" ] || modprobe -r "$kvmvendor" || bad "modprobe -r $kvmvendor"
+	if [ -d /sys/module/kvm ]; then modprobe -r kvm || bad "modprobe -r kvm"; fi
+}
+kvm_load() {
+	modprobe kvm && { [ -z "$kvmvendor" ] || modprobe "$kvmvendor"; }
+}
+remove_new() { bash "$(dirname "$0")/livepatch.sh" remove; }
+remove_new || bad "remove before loading kvm again"
+kvm_unload
+apply_new || bad "apply with kvm unloaded"
+kvm_load || bad "kvm did not load under the livepatch"
 msgs=$(dmesg)
 for obj in kvm kvm_amd; do
 	[ $obj = kvm ] || [ "$kvmvendor" = kvm_amd ] || continue
 	[[ "$msgs" == *"applying patch '$name' to loading module '$obj'"* ]] &&
 		echo "object $obj: applied on load" || bad "$obj: no 'applying patch' message"
 done
-kvm_hooked "kvm reloaded"
-kvm_guest "kvm reloaded"
+kvm_hooked "kvm loaded under the livepatch"
+kvm_guest "kvm loaded under the livepatch"
+# Loaded a second time, kvm is refused on kernels without 0c05e7bd2d01
+# ("livepatch,x86: Clear relocation targets on a module removal", 6.3):
+# the livepatch still has the relocations of the first load.  remove, load,
+# apply is the way out.
+kvm_unload
+if kvm_load 2>/dev/null; then
+	echo "kvm second load: accepted"
+else
+	echo "kvm second load: refused, as without 0c05e7bd2d01"
+	remove_new || bad "remove after the refused load"
+	kvm_load || bad "kvm did not load after remove"
+	apply_new || bad "apply after the refused load"
+fi
+kvm_hooked "kvm after the second load"
+kvm_guest "kvm after the second load"
 
 # ip_do_fragment(): a 3000-byte ping over a 1500-byte MTU is fragmented.
 gw=$(ip route | awk '/^default/{print $3; exit}')
@@ -299,7 +323,9 @@ if [ -n "$oldname" ]; then
 	[[ $'\n'"$mods" == *$'\n'"$oldname "* ]] && bad "earlier module $oldname still loaded after recovering"
 fi
 
-if dmesg | grep -v "$OLDWARN" | grep -E 'BUG:|Oops|WARNING:|livepatch: .*(fail|error)'; then
+# The refused second load of kvm above logs these.
+REFUSED="livepatch: failed to initialize patch '$name' for module 'kvm(_amd)?' \\(-8\\)|livepatch: patch '$name' failed for module 'kvm(_amd)?', refusing"
+if dmesg | grep -v "$OLDWARN" | grep -vE "$REFUSED" | grep -E 'BUG:|Oops|WARNING:|livepatch: .*(fail|error)'; then
 	bad "kernel messages above"
 fi
 

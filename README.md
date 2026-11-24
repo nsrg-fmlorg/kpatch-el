@@ -35,6 +35,12 @@ nsrg-fmlorg/kpatch-cve-2026-98432, kpatch-alma-cve-2026-99999 or
 kpatch-rocky-cve-2026-99999 already loaded is replaced and unloaded. A
 livepatch does not survive a reboot.
 
+On 8, once `kvm` or `kvm_amd` has been loaded under the livepatch and
+unloaded, loading it again is refused with "Exec format error": the
+kernel does not clear the relocations of an unloaded module (upstream
+does since 6.3, 0c05e7bd2d01). Before reloading them, for instance to
+change `nested`, run `remove`, reload, and run `apply` again.
+
 ## How the ports are made
 
 CVE-2026-98432's and CVE-2026-99999's part is the port made for
@@ -76,7 +82,8 @@ one over it with `scripts/livepatch.sh`, and checks that:
 - the earlier module is replaced and unloaded;
 - the changed functions are in the livepatch, and the changed ones of
   `kvm` and, on AMD, `kvm_amd` are redirected, both in the modules the
-  boot loaded before the patch and after loading them again under it;
+  boot loaded before the patch and when loaded under it, and after a
+  second load is refused (above) `remove`, load, `apply` brings it back;
 - 2000 TCP connections with IP options open and close
   (`tools/tcpopt.py`), and 200 connections each over IPv4 and IPv6 that
   are completed through SYN cookies send and receive
