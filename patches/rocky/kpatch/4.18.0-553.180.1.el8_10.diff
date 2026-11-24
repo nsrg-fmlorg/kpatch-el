@@ -154,7 +154,29 @@ diff -urNp a/arch/x86/kvm/vmx/nested.c b/arch/x86/kvm/vmx/nested.c
 diff -urNp a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
 --- a/arch/x86/kvm/x86.c	2024-04-07 20:25:16
 +++ b/arch/x86/kvm/x86.c	2026-11-20 13:20:34
-@@ -11168,8 +11168,17 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
+@@ -612,6 +612,12 @@ EXPORT_SYMBOL_GPL(kvm_deliver_exception_payload);
+ }
+ EXPORT_SYMBOL_GPL(kvm_deliver_exception_payload);
+ 
++/* Forcibly leave the nested mode in cases like a vCPU reset */
++static void kvm_leave_nested(struct kvm_vcpu *vcpu)
++{
++	kvm_x86_ops.nested_ops->leave_nested(vcpu);
++}
++
+ static void kvm_multiple_exception(struct kvm_vcpu *vcpu,
+ 		unsigned nr, bool has_error, u32 error_code,
+ 	        bool has_payload, unsigned long payload, bool reinject)
+@@ -5020,7 +5026,7 @@ static int kvm_vcpu_ioctl_x86_set_vcpu_events(struct k
+ 
+ 	if (events->flags & KVM_VCPUEVENT_VALID_SMM) {
+ 		if (!!(vcpu->arch.hflags & HF_SMM_MASK) != events->smi.smm) {
+-			kvm_x86_ops.nested_ops->leave_nested(vcpu);
++			kvm_leave_nested(vcpu);
+ 			kvm_smm_changed(vcpu, events->smi.smm);
+ 		}
+ 
+@@ -11168,8 +11174,17 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
  	WARN_ON_ONCE(!init_event &&
  		     (old_cr0 || kvm_read_cr3(vcpu) || kvm_read_cr4(vcpu)));
  
@@ -165,14 +187,14 @@ diff -urNp a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
 +	 * bits), i.e. virtualization is disabled.
 +	 */
 +	if (is_guest_mode(vcpu))
-+		kvm_x86_ops.nested_ops->leave_nested(vcpu);
++		kvm_leave_nested(vcpu);
 +
  	kvm_lapic_reset(vcpu, init_event);
  
  	vcpu->arch.hflags = 0;
  
  	vcpu->arch.smi_pending = 0;
-@@ -11264,18 +11273,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
+@@ -11264,18 +11279,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
  	static_call(kvm_x86_set_efer)(vcpu, 0);
  	static_call(kvm_x86_update_exception_bitmap)(vcpu);
  

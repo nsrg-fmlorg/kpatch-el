@@ -42,22 +42,20 @@ kpatch-cve-2026-98432 (`tools/mkdiffs.sh`, below). The other three are
 upstream's changes, checked against the kernel's source, and appended.
 
 On 4.18.0-553.180.1.el8_10 upstream's KVM changes and NoisyTCP's lookup
-changes apply as they are, except two
-things left out of `x86.c`: upstream's `WARN_ON_ONCE()` after the reset,
-which only checks the fix, and its new `kvm_leave_nested()` helper, so
-`kvm_vcpu_reset()` calls `leave_nested` directly. With the warning, gcc
+changes apply as they are, except for upstream's `WARN_ON_ONCE()` after
+the reset, which only checks the fix and is left out. With it, gcc
 inlines `kvm_check_request()` into `vcpu_enter_guest()` differently, and
 kpatch-build refuses that function for its jump labels on static keys
 that live in the `kvm` module; without it the function compiles the same
-as in the shipped kernel. NoisyTCP also fixes a refcount in the
-Fast Open failure path of `tcp_conn_request()`, which upstream writes
-against code where `tcp_disconnect()` has already dropped one reference
-to the request. EL8 has that code from 4.18.0-553.87.1.el8_10 on, where
-Red Hat took the CVE-2025-39955 fix (RHEL-120664), so upstream's hunk
-applies there too. Earlier EL8 kernels still call
-`reqsk_fastopen_remove()` in that path and need it written differently;
-none of them is covered yet. Upstream's changes to request socket
-migration have nothing to apply to on 8.
+as in the shipped kernel. NoisyTCP also fixes a refcount in the Fast
+Open failure path of `tcp_conn_request()`, which upstream writes against
+code where `tcp_disconnect()` has already dropped one reference to the
+request. EL8 has that code from 4.18.0-553.87.1.el8_10 on, where Red Hat
+took the CVE-2025-39955 fix (RHEL-120664), so upstream's hunk applies
+there too. Earlier EL8 kernels still call `reqsk_fastopen_remove()` in
+that path and need it written differently; none of them is covered yet.
+Upstream's changes to request socket migration have nothing to apply to
+on 8.
 
 `tools/mkdiffs.sh` ports CVE-2026-98432 to every kernel SRPM of a minor,
 after applying the SRPM's own patches to its tarball as `%prep` does
