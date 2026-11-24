@@ -43,7 +43,11 @@ CVE-2026-98432 と CVE-2026-99999 の分は、kpatch-cve-2026-98432 のために
 カーネルのソースと突き合わせて、後ろにつないでいます。
 
 4.18.0-553.180.1.el8_10 では、KVM の変更と NoisyTCP の検索の変更は
-upstream のものがそのまま当たります。NoisyTCP は `tcp_conn_request()` の
+upstream のものがそのまま当たります。ただし `kvm_vcpu_reset()` は、
+upstream が新しく足した `kvm_leave_nested()` を通さず `leave_nested` を
+直接呼びます。この関数を `x86.c` の前のほうに足すと、それより後ろの行が
+ずれて kpatch-build が `vcpu_enter_guest()` を変わったと数え、`kvm`
+モジュールにある static key を理由に断るためです。NoisyTCP は `tcp_conn_request()` の
 Fast Open の失敗の経路の参照カウントも直しますが、upstream のこの変更は、
 `tcp_disconnect()` が request の参照を既に一つ落としているコードを前提に
 書かれています。EL8 は 4.18.0-553.87.1.el8_10 で Red Hat が

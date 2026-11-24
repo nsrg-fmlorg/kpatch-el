@@ -41,8 +41,12 @@ CVE-2026-98432's and CVE-2026-99999's part is the port made for
 kpatch-cve-2026-98432 (`tools/mkdiffs.sh`, below). The other three are
 upstream's changes, checked against the kernel's source, and appended.
 
-On 4.18.0-553.180.1.el8_10 all of upstream's KVM changes and NoisyTCP's
-lookup changes apply as they are. NoisyTCP also fixes a refcount in the
+On 4.18.0-553.180.1.el8_10 upstream's KVM changes and NoisyTCP's lookup
+changes apply as they are, except that `kvm_vcpu_reset()` calls
+`leave_nested` directly instead of through upstream's new
+`kvm_leave_nested()`: the helper, added near the top of `x86.c`, moves
+the lines below it, and kpatch-build then counts `vcpu_enter_guest()` as
+changed and refuses its static keys, which live in the `kvm` module. NoisyTCP also fixes a refcount in the
 Fast Open failure path of `tcp_conn_request()`, which upstream writes
 against code where `tcp_disconnect()` has already dropped one reference
 to the request. EL8 has that code from 4.18.0-553.87.1.el8_10 on, where
