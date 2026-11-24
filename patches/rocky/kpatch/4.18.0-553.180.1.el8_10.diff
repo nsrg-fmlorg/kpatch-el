@@ -154,7 +154,7 @@ diff -urNp a/arch/x86/kvm/vmx/nested.c b/arch/x86/kvm/vmx/nested.c
 diff -urNp a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
 --- a/arch/x86/kvm/x86.c	2024-04-07 20:25:16
 +++ b/arch/x86/kvm/x86.c	2026-11-20 13:20:34
-@@ -11168,8 +11174,18 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
+@@ -11168,8 +11168,17 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
  	WARN_ON_ONCE(!init_event &&
  		     (old_cr0 || kvm_read_cr3(vcpu) || kvm_read_cr4(vcpu)));
  
@@ -169,11 +169,10 @@ diff -urNp a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
 +
  	kvm_lapic_reset(vcpu, init_event);
  
-+	WARN_ON_ONCE(is_guest_mode(vcpu) || is_smm(vcpu));
  	vcpu->arch.hflags = 0;
  
  	vcpu->arch.smi_pending = 0;
-@@ -11264,18 +11280,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
+@@ -11264,18 +11273,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_e
  	static_call(kvm_x86_set_efer)(vcpu, 0);
  	static_call(kvm_x86_update_exception_bitmap)(vcpu);
  

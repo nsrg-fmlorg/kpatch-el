@@ -46,7 +46,10 @@ changes apply as they are, except that `kvm_vcpu_reset()` calls
 `leave_nested` directly instead of through upstream's new
 `kvm_leave_nested()`: the helper, added near the top of `x86.c`, moves
 the lines below it, and kpatch-build then counts `vcpu_enter_guest()` as
-changed and refuses its static keys, which live in the `kvm` module. NoisyTCP also fixes a refcount in the
+changed and refuses its static keys, which live in the `kvm` module.
+For the same reason upstream's `WARN_ON_ONCE()` after the reset is left
+out: it changes how gcc inlines `kvm_check_request()` into
+`vcpu_enter_guest()`, and without it that function compiles the same. NoisyTCP also fixes a refcount in the
 Fast Open failure path of `tcp_conn_request()`, which upstream writes
 against code where `tcp_disconnect()` has already dropped one reference
 to the request. EL8 has that code from 4.18.0-553.87.1.el8_10 on, where

@@ -47,7 +47,10 @@ upstream のものがそのまま当たります。ただし `kvm_vcpu_reset()` 
 upstream が新しく足した `kvm_leave_nested()` を通さず `leave_nested` を
 直接呼びます。この関数を `x86.c` の前のほうに足すと、それより後ろの行が
 ずれて kpatch-build が `vcpu_enter_guest()` を変わったと数え、`kvm`
-モジュールにある static key を理由に断るためです。NoisyTCP は `tcp_conn_request()` の
+モジュールにある static key を理由に断るためです。同じ理由で、upstream が
+リセットの後に足した `WARN_ON_ONCE()` も入れていません。これがあると gcc
+が `vcpu_enter_guest()` への `kvm_check_request()` のインライン化を変え、
+無ければこの関数は元と同じに組まれます。NoisyTCP は `tcp_conn_request()` の
 Fast Open の失敗の経路の参照カウントも直しますが、upstream のこの変更は、
 `tcp_disconnect()` が request の参照を既に一つ落としているコードを前提に
 書かれています。EL8 は 4.18.0-553.87.1.el8_10 で Red Hat が
