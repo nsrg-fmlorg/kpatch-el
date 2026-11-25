@@ -66,6 +66,10 @@ modprobe nf_conntrack_bridge 2>/dev/null &&
 # refused before the sink.  A kernel that reproduces it must have it.
 before_csum=$(bash "$(dirname "$0")/csum-probe.sh" before); echo "$before_csum"
 need99999=${NEED99999:-}
+# The parts of the port in this kernel's module (tools/loadtest.sh).
+HAS=" ${HAS:-} "
+has() { [[ $HAS == *" $1 "* ]]; }
+echo "port:$HAS"
 echo "CVE-2026-99999 part in the module: ${need99999:+yes}${need99999:-no}"
 case $before_csum in
 *"bad=vulnerable"*) [ -n "$need99999" ] || bad "the shipped kernel reproduces CVE-2026-99999, but the port has no fix for it" ;;
@@ -135,7 +139,9 @@ if [ -n "$oldname" ]; then
 fi
 
 # CVE-2026-98432: both functions are replaced in vmlinux.
-for f in inet_sock_destruct tcp_v4_reqsk_destructor; do
+fns=
+has 98432 && fns="inet_sock_destruct tcp_v4_reqsk_destructor"
+for f in $fns; do
 	if compgen -G "/sys/kernel/livepatch/$name/vmlinux/$f,*" >/dev/null; then
 		echo "function $f: patched"
 	else
@@ -145,7 +151,11 @@ done
 
 # CVE-2026-99288: the established-hash lookups and the two refcount
 # fixes, all in vmlinux.
-for f in __inet_lookup_established __inet6_lookup_established tcp_get_cookie_sock tcp_conn_request; do
+fns=
+has lookup && fns="__inet_lookup_established __inet6_lookup_established"
+has syncookies && fns="$fns tcp_get_cookie_sock"
+has fastopen && fns="$fns tcp_conn_request"
+for f in $fns; do
 	if compgen -G "/sys/kernel/livepatch/$name/vmlinux/$f,*" >/dev/null; then
 		echo "function $f: patched"
 	else
@@ -153,7 +163,9 @@ for f in __inet_lookup_established __inet6_lookup_established tcp_get_cookie_soc
 	fi
 done
 # CVE-2022-3344 and CVE-2026-99312: the vCPU reset in kvm.
-if compgen -G "/sys/kernel/livepatch/$name/kvm/kvm_vcpu_reset,*" >/dev/null; then
+if ! has kvm; then
+	echo "note: no KVM fix in this kernel's module"
+elif compgen -G "/sys/kernel/livepatch/$name/kvm/kvm_vcpu_reset,*" >/dev/null; then
 	echo "function kvm/kvm_vcpu_reset: patched"
 else
 	bad "function kvm_vcpu_reset not in the livepatch"
@@ -165,8 +177,9 @@ fi
 # The old loop skipped objects without the file and so checked nothing
 # on 4.18.
 # Nothing in kvm_intel changes, so it is no object of the livepatch.
-want="vmlinux kvm"
-[ "$kvmvendor" = kvm_amd ] && want="$want kvm_amd"
+want="vmlinux"
+has kvm && want="$want kvm"
+has svm && [ "$kvmvendor" = kvm_amd ] && want="$want kvm_amd"
 [ -n "$need99999" ] && want="$want nfnetlink_queue xt_CHECKSUM"
 # Read whole, then match: "cmd | grep -q" under pipefail fails when grep
 # stops early and cmd dies of SIGPIPE.
@@ -225,7 +238,8 @@ tracing=/sys/kernel/debug/tracing
 [ -e $tracing/enabled_functions ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
 kvm_hooked() {
 	local f fns="kvm_vcpu_reset" ef
-	[ "$kvmvendor" = kvm_amd ] && fns="$fns svm_vcpu_free svm_free_nested"
+	has kvm || return 0
+	has svm && [ "$kvmvendor" = kvm_amd ] && fns="$fns svm_vcpu_free svm_free_nested"
 	ef=$(cat $tracing/enabled_functions)
 	for f in $fns; do
 		if grep -E "^$f \[kvm(_amd)?\] .* I" <<<"$ef"; then
@@ -258,7 +272,8 @@ apply_new || bad "apply with kvm unloaded"
 kvm_load || bad "kvm did not load under the livepatch"
 msgs=$(dmesg)
 for obj in kvm kvm_amd; do
-	[ $obj = kvm ] || [ "$kvmvendor" = kvm_amd ] || continue
+	has kvm || continue
+	[ $obj = kvm ] || { has svm && [ "$kvmvendor" = kvm_amd ]; } || continue
 	[[ "$msgs" == *"applying patch '$name' to loading module '$obj'"* ]] &&
 		echo "object $obj: applied on load" || bad "$obj: no 'applying patch' message"
 done

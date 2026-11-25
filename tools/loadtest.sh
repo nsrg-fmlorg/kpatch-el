@@ -156,9 +156,19 @@ rc=0
 # kernel that needed it (Rocky 6.12.0-211.66.1.el10_2 in the pilot).
 need99999=
 grep -q ip_check_csum_start "$HERE/../patches/$DISTRO/$NVR.diff" && need99999=1
+# What else this kernel's port changes; loadtest-guest.sh checks for that.
+D=$HERE/../patches/$DISTRO/kpatch/$NVR.diff
+[ -f "$D" ] || { echo "no $D"; exit 1; }
+has=
+grep -q 'kfree_rcu(rcu_deref' "$D" && has="$has 98432"
+grep -q '^+.*hlist_nulls_unhashed_lockless' "$D" && has="$has lookup"
+grep -q '^+++ b/net/ipv4/syncookies.c' "$D" && has="$has syncookies"
+grep -q '^+++ b/net/ipv4/tcp_input.c' "$D" && has="$has fastopen"
+grep -q '^+++ b/arch/x86/kvm/x86.c' "$D" && has="$has kvm"
+grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$D" && has="$has svm"
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=
 [ -f "$W/$OLDKO" ] && old='$HOME/'$OLDKO
-vm "sudo FROM_RELEASE=${FROM_RELEASE:-} SCRIPT_REF=${SCRIPT_REF:-} OLDREPO=$OLDREPO OLDREF=${OLDREF:-} OLDKO=$old NEED99999=$need99999 bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
+vm "sudo FROM_RELEASE=${FROM_RELEASE:-} SCRIPT_REF=${SCRIPT_REF:-} OLDREPO=$OLDREPO OLDREF=${OLDREF:-} OLDKO=$old NEED99999=$need99999 HAS='$has' bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
 vm 'sudo systemctl poweroff' || true
 exit $rc
