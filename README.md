@@ -69,7 +69,7 @@ fixes, the one form in `tools/extra/` that applies without fuzz:
 - Where the Fast Open failure path still calls `reqsk_fastopen_remove()`,
   that call has dropped one reference, so only the other is put.
 - Request socket migration differs in context only, except on kernels
-  before upstream c31e73121f4c, where the clone's own timer was left
+  before upstream 97c8a3c1f73d, where the clone's own timer was left
   armed; those take that change as well, which the fix relies on.
 - CVE-2022-3344's fix calls the `leave_nested` member of
   `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a

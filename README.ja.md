@@ -70,7 +70,7 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
 - Fast Open の失敗の経路で、まだ `reqsk_fastopen_remove()` を呼ぶものは、
   その呼び出しが参照を一つ落としているので、残りの一つだけを落とします。
 - request socket の移し替えは文脈が違うだけです。ただし upstream の
-  c31e73121f4c より前のカーネルは、複製した request のタイマーを動かした
+  97c8a3c1f73d より前のカーネルは、複製した request のタイマーを動かした
   ままにしており、この直しはそれが止まっていることを前提にしているので、
   その変更も入れます。
 - CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
