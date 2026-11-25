@@ -47,11 +47,11 @@ diff --git a/arch/x86/kvm/lapic.c b/arch/x86/kvm/lapic.c
 diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
 --- a/arch/x86/kvm/svm/svm.c
 +++ b/arch/x86/kvm/svm/svm.c
-@@ -2116,6 +2116,7 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+@@ -2115,6 +2115,7 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+ 		if (is_smm(vcpu))
  			kvm_smm_changed(vcpu, false);
  #endif
++		vcpu->arch.cr0 |= X86_CR0_PG;
  		kvm_vcpu_reset(vcpu, true);
-+		kvm_mmu_reset_context(vcpu);
  	}
  
- 	kvm_run->exit_reason = KVM_EXIT_SHUTDOWN;

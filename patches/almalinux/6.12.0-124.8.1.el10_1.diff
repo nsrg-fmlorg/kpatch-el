@@ -48,14 +48,14 @@ diff --git a/arch/x86/kvm/lapic.c b/arch/x86/kvm/lapic.c
 diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
 --- a/arch/x86/kvm/svm/svm.c
 +++ b/arch/x86/kvm/svm/svm.c
-@@ -2295,6 +2295,7 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+@@ -2294,6 +2294,7 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+ 		if (is_smm(vcpu))
  			kvm_smm_changed(vcpu, false);
  #endif
++		vcpu->arch.cr0 |= X86_CR0_PG;
  		kvm_vcpu_reset(vcpu, true);
-+		kvm_mmu_reset_context(vcpu);
  	}
  
- 	kvm_run->exit_reason = KVM_EXIT_SHUTDOWN;
 diff --git a/include/net/ip.h b/include/net/ip.h
 --- a/include/net/ip.h
 +++ b/include/net/ip.h
@@ -151,6 +151,15 @@ diff --git a/net/ipv4/inet_connection_sock.c b/net/ipv4/inet_connection_sock.c
  				}
  
  				/* inet_csk_reqsk_queue_add() has already
+@@ -1527,7 +1531,7 @@ skip_child_forget:
+ 		local_bh_enable();
+ 		sock_put(child);
+ 
+-		cond_resched();
++		__cond_resched();
+ 	}
+ 	if (queue->fastopenq.rskq_rst_head) {
+ 		/* Free all the reqs queued in rskq_rst_head. */
 diff --git a/net/ipv4/inet_hashtables.c b/net/ipv4/inet_hashtables.c
 --- a/net/ipv4/inet_hashtables.c
 +++ b/net/ipv4/inet_hashtables.c
