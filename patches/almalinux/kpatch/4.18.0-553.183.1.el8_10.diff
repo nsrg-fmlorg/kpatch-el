@@ -61,33 +61,10 @@ diff --git a/arch/x86/kvm/svm/nested.c b/arch/x86/kvm/svm/nested.c
  	svm_vcpu_free_msrpm(svm->nested.msrpm);
  	svm->nested.msrpm = NULL;
  
-@@ -1101,9 +1104,6 @@ void svm_free_nested(struct vcpu_svm *svm)
- 	svm->nested.initialized = false;
- }
- 
--/*
-- * Forcibly leave nested mode in order to be able to reset the VCPU later on.
-- */
- void svm_leave_nested(struct kvm_vcpu *vcpu)
- {
- 	struct vcpu_svm *svm = to_svm(vcpu);
 diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
 --- a/arch/x86/kvm/svm/svm.c
 +++ b/arch/x86/kvm/svm/svm.c
-@@ -351,12 +351,6 @@ int svm_set_efer(struct kvm_vcpu *vcpu, u64 efer)
- 	return 0;
- }
- 
--static int is_external_interrupt(u32 info)
--{
--	info &= SVM_EVTINJ_TYPE_MASK | SVM_EVTINJ_VALID;
--	return info == (SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR);
--}
--
- static u32 svm_get_interrupt_shadow(struct kvm_vcpu *vcpu)
- {
- 	struct vcpu_svm *svm = to_svm(vcpu);
-@@ -1397,6 +1391,7 @@ static void svm_vcpu_free(struct kvm_vcpu *vcpu)
+@@ -1397,6 +1397,7 @@ static void svm_vcpu_free(struct kvm_vcpu *vcpu)
  	 */
  	svm_clear_current_vmcb(svm->vmcb);
  
@@ -95,7 +72,7 @@ diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
  	svm_free_nested(svm);
  
  	sev_free_vcpu(vcpu);
-@@ -2081,7 +2076,10 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+@@ -2081,7 +2082,10 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
  	 * in response to shutdown.
  	 */
  	clear_page(svm->vmcb);
@@ -106,35 +83,6 @@ diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
  
  	kvm_run->exit_reason = KVM_EXIT_SHUTDOWN;
  	return 0;
-@@ -3370,15 +3368,6 @@ static int svm_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
- 		return 0;
- 	}
- 
--	if (is_external_interrupt(svm->vmcb->control.exit_int_info) &&
--	    exit_code != SVM_EXIT_EXCP_BASE + PF_VECTOR &&
--	    exit_code != SVM_EXIT_NPF && exit_code != SVM_EXIT_TASK_SWITCH &&
--	    exit_code != SVM_EXIT_INTR && exit_code != SVM_EXIT_NMI)
--		printk(KERN_ERR "%s: unexpected exit_int_info 0x%x "
--		       "exit_code 0x%x\n",
--		       __func__, svm->vmcb->control.exit_int_info,
--		       exit_code);
--
- 	if (exit_fastpath != EXIT_FASTPATH_NONE)
- 		return 1;
- 
-diff --git a/arch/x86/kvm/vmx/nested.c b/arch/x86/kvm/vmx/nested.c
---- a/arch/x86/kvm/vmx/nested.c
-+++ b/arch/x86/kvm/vmx/nested.c
-@@ -6345,9 +6345,6 @@ out:
- 	return kvm_state.size;
- }
- 
--/*
-- * Forcibly leave nested mode in order to be able to reset the VCPU later on.
-- */
- void vmx_leave_nested(struct kvm_vcpu *vcpu)
- {
- 	if (is_guest_mode(vcpu)) {
 diff --git a/net/ipv4/inet_hashtables.c b/net/ipv4/inet_hashtables.c
 --- a/net/ipv4/inet_hashtables.c
 +++ b/net/ipv4/inet_hashtables.c
