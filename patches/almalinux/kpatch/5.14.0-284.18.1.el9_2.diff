@@ -1,3 +1,53 @@
+diff --git a/arch/x86/kvm/lapic.c b/arch/x86/kvm/lapic.c
+--- a/arch/x86/kvm/lapic.c
++++ b/arch/x86/kvm/lapic.c
+@@ -43,6 +43,7 @@
+ #include "cpuid.h"
+ #include "hyperv.h"
+ #include "smm.h"
++#include "kpatch-macros.h"
+ 
+ #ifndef CONFIG_X86_64
+ #define mod_64(x, y) ((x) - (y) * div64_u64(x, y))
+@@ -3029,7 +3030,7 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 	int r;
+ 	unsigned long pe;
+ 
+-	if (!lapic_in_kernel(vcpu))
++	if (!vcpu->arch.apic)
+ 		return 0;
+ 
+ 	/*
+@@ -3060,7 +3061,8 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 	 * KVM_MP_STATE_INIT_RECEIVED state), just eat SIPIs
+ 	 * and leave the INIT pending.
+ 	 */
+-	if (!kvm_apic_init_sipi_allowed(vcpu)) {
++	if ((is_smm(vcpu) ||
++	    KPATCH_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))) {
+ 		WARN_ON_ONCE(vcpu->arch.mp_state == KVM_MP_STATE_INIT_RECEIVED);
+ 		if (test_bit(KVM_APIC_SIPI, &pe))
+ 			clear_bit(KVM_APIC_SIPI, &apic->pending_events);
+@@ -3069,7 +3071,10 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 
+ 	if (test_bit(KVM_APIC_INIT, &pe)) {
+ 		clear_bit(KVM_APIC_INIT, &apic->pending_events);
++		if (is_guest_mode(vcpu))
++			kvm_x86_ops.nested_ops->leave_nested(vcpu);
+ 		kvm_vcpu_reset(vcpu, true);
++		kvm_mmu_reset_context(vcpu);
+ 		if (kvm_vcpu_is_bsp(apic->vcpu))
+ 			vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+ 		else
+@@ -3081,7 +3086,7 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 			/* evaluate pending_events before reading the vector */
+ 			smp_rmb();
+ 			sipi_vector = apic->sipi_vector;
+-			static_call(kvm_x86_vcpu_deliver_sipi_vector)(vcpu, sipi_vector);
++			KPATCH_STATIC_CALL(kvm_x86_vcpu_deliver_sipi_vector)(vcpu, sipi_vector);
+ 			vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+ 		}
+ 	}
 diff --git a/arch/x86/kvm/svm/nested.c b/arch/x86/kvm/svm/nested.c
 --- a/arch/x86/kvm/svm/nested.c
 +++ b/arch/x86/kvm/svm/nested.c
@@ -45,7 +95,18 @@ diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
  	svm_free_nested(svm);
  
  	sev_free_vcpu(vcpu);
-@@ -3428,15 +3423,6 @@ static int svm_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+@@ -2124,7 +2119,10 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+ 	 * in response to shutdown.
+ 	 */
+ 	clear_page(svm->vmcb);
++	if (is_guest_mode(vcpu))
++		svm_leave_nested(vcpu);
+ 	kvm_vcpu_reset(vcpu, true);
++	kvm_mmu_reset_context(vcpu);
+ 
+ 	kvm_run->exit_reason = KVM_EXIT_SHUTDOWN;
+ 	return 0;
+@@ -3428,15 +3426,6 @@ static int svm_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
  		return 0;
  	}
  
@@ -74,81 +135,6 @@ diff --git a/arch/x86/kvm/vmx/nested.c b/arch/x86/kvm/vmx/nested.c
  void vmx_leave_nested(struct kvm_vcpu *vcpu)
  {
  	if (is_guest_mode(vcpu)) {
-diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
---- a/arch/x86/kvm/x86.c
-+++ b/arch/x86/kvm/x86.c
-@@ -603,6 +603,12 @@ void kvm_deliver_exception_payload(struct kvm_vcpu *vcpu)
- }
- EXPORT_SYMBOL_GPL(kvm_deliver_exception_payload);
- 
-+/* Forcibly leave the nested mode in cases like a vCPU reset */
-+static void kvm_leave_nested(struct kvm_vcpu *vcpu)
-+{
-+	kvm_x86_ops.nested_ops->leave_nested(vcpu);
-+}
-+
- static void kvm_multiple_exception(struct kvm_vcpu *vcpu,
- 		unsigned nr, bool has_error, u32 error_code,
- 	        bool has_payload, unsigned long payload, bool reinject)
-@@ -5147,7 +5153,7 @@ static int kvm_vcpu_ioctl_x86_set_vcpu_events(struct kvm_vcpu *vcpu,
- 
- 	if (events->flags & KVM_VCPUEVENT_VALID_SMM) {
- 		if (!!(vcpu->arch.hflags & HF_SMM_MASK) != events->smi.smm) {
--			kvm_x86_ops.nested_ops->leave_nested(vcpu);
-+			kvm_leave_nested(vcpu);
- 			kvm_smm_changed(vcpu, events->smi.smm);
- 		}
- 
-@@ -11396,6 +11402,15 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
- 	WARN_ON_ONCE(!init_event &&
- 		     (old_cr0 || kvm_read_cr3(vcpu) || kvm_read_cr4(vcpu)));
- 
-+	/*
-+	 * SVM doesn't unconditionally VM-Exit on INIT and SHUTDOWN, thus it's
-+	 * possible to INIT the vCPU while L2 is active.  Force the vCPU back
-+	 * into L1 as EFER.SVME is cleared on INIT (along with all other EFER
-+	 * bits), i.e. virtualization is disabled.
-+	 */
-+	if (is_guest_mode(vcpu))
-+		kvm_leave_nested(vcpu);
-+
- 	kvm_lapic_reset(vcpu, init_event);
- 
- 	vcpu->arch.hflags = 0;
-@@ -11494,18 +11509,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
- 	static_call(kvm_x86_set_efer)(vcpu, 0);
- 	static_call(kvm_x86_update_exception_bitmap)(vcpu);
- 
-+	if (old_cr0 & X86_CR0_PG)
-+		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
-+
- 	/*
--	 * On the standard CR0/CR4/EFER modification paths, there are several
--	 * complex conditions determining whether the MMU has to be reset and/or
--	 * which PCIDs have to be flushed.  However, CR0.WP and the paging-related
--	 * bits in CR4 and EFER are irrelevant if CR0.PG was '0'; and a reset+flush
--	 * is needed anyway if CR0.PG was '1' (which can only happen for INIT, as
--	 * CR0 will be '0' prior to RESET).  So we only need to check CR0.PG here.
-+	 * Unconditionally reset the MMU, even though super strictly speaking,
-+	 * a MMU reset is only necessary if and only one of the page role bits
-+	 * is changing.  All of the CR0/CR4/EFER bits effectively get covered
-+	 * by checking CR0.PG=1, as CR0.WP and the paging-related bits in CR4
-+	 * and EFER are irrelevant if CR0.PG was '0'.  Subtly, if the vCPU was
-+	 * in guest mode (L2) or SMM (although emulating INIT in SMM _should_
-+	 * be impossible), an MMU reset is also necessary as "guest mode" and
-+	 * "smm" are both encoded in the shadow page role.  As a result, the
-+	 * only scenarios where an MMU reset is *not* needed is if the vCPU is
-+	 * in Real Mode or Unpaged Protected Mode, and micro-optimizing those
-+	 * paths are not worth the risk of running with a stale MMU context.
- 	 */
--	if (old_cr0 & X86_CR0_PG) {
--		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
--		kvm_mmu_reset_context(vcpu);
--	}
-+	kvm_mmu_reset_context(vcpu);
- 
- 	/*
- 	 * Intel's SDM states that all TLB entries are flushed on INIT.  AMD's
 diff --git a/net/bridge/netfilter/nf_conntrack_bridge.c b/net/bridge/netfilter/nf_conntrack_bridge.c
 --- a/net/bridge/netfilter/nf_conntrack_bridge.c
 +++ b/net/bridge/netfilter/nf_conntrack_bridge.c

@@ -46,7 +46,7 @@ diff --git a/net/ipv4/inet_hashtables.c b/net/ipv4/inet_hashtables.c
  			if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
  				goto out;
 -			if (unlikely(!INET_MATCH(sk, net, acookie,
-+			if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++			if (unlikely(!READ_ONCE(sk->sk_nulls_node.pprev) ||
 +				     !INET_MATCH(sk, net, acookie,
  						 saddr, daddr, ports,
  						 dif, sdif))) {
@@ -91,7 +91,7 @@ diff --git a/net/ipv6/inet6_hashtables.c b/net/ipv6/inet6_hashtables.c
  			goto out;
  
 -		if (unlikely(!INET6_MATCH(sk, net, saddr, daddr, ports, dif, sdif))) {
-+		if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++		if (unlikely(!READ_ONCE(sk->sk_nulls_node.pprev) ||
 +			     !INET6_MATCH(sk, net, saddr, daddr, ports, dif,
 +					  sdif))) {
  			sock_gen_put(sk);
