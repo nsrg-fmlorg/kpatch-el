@@ -50,18 +50,15 @@ CVE-2026-98432 と CVE-2026-99999 の分は、kpatch-cve-2026-98432 のために
 
 4.18.0-553.180.1.el8_10 では、KVM の変更と NoisyTCP の検索の変更は
 upstream のものがそのまま当たります。ただし、upstream がリセットの後に足した
-`WARN_ON_ONCE()` は、直しを確かめるだけのものなので外しています。これが
-あると gcc が `vcpu_enter_guest()` への `kvm_check_request()` の
-インライン化を変え、kpatch-build はこの関数を、`kvm` モジュールにある
-static key の jump label を理由に断ります。無ければ、この関数は配布された
-カーネルと同じに組まれます。NoisyTCP は `tcp_conn_request()` の
+`WARN_ON_ONCE()` は、直しを確かめるだけのものなので外しています (KVM の分は
+さらに場所を移します。下)。NoisyTCP は `tcp_conn_request()` の
 Fast Open の失敗の経路の参照カウントも直しますが、upstream のこの変更は、
 `tcp_disconnect()` が request の参照を既に一つ落としているコードを前提に
 書かれています。EL8 は 4.18.0-553.87.1.el8_10 で Red Hat が
 CVE-2025-39955 の直し (RHEL-120664) を入れてから同じ形になっており、
 upstream の hunk がそのまま当たります。それより前の EL8 のカーネルは、
-この経路でまだ `reqsk_fastopen_remove()` を呼んでいて別の書き方が要り、
-まだ一つも対象にしていません。upstream の request socket の移し替えの
+この経路でまだ `reqsk_fastopen_remove()` を呼んでいて別の書き方が要ります
+(下)。upstream の request socket の移し替えの
 変更は、8 には当てる先がありません。
 
 ほかのカーネルでは `tools/extra.py` が、直しの部分ごとに、`tools/extra/` の
@@ -73,10 +70,14 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
   97c8a3c1f73d より前のカーネルは、複製した request のタイマーを動かした
   ままにしており、この直しはそれが止まっていることを前提にしているので、
   その変更も入れます。
-- 9 では、`kvm_vcpu_reset()` の中の、`kvm` モジュールにある static call を
-  kpatch-build が扱えません。そこで直しの中身をその前後で行います。L2 の
-  実行中にこれを呼びうる、`kvm_apic_accept_events()` (INIT) と、AMD の
-  `shutdown_interception()` の二つです。
+- KVM の直しは `arch/x86/kvm/x86.c` を変えません。9 と 10 では、
+  `kvm_vcpu_reset()` の中の、`kvm` モジュールにある static call を
+  kpatch-build と klp-build が断ります。8 では、一部のカーネルでこの関数を
+  変えると、gcc がこのファイルの他の関数のインライン化を変え、
+  `vcpu_enter_guest()` が jump label を理由に断られます。そこで直しの中身を
+  この関数の前後で行います。L2 の実行中にこれを呼びうる、
+  `kvm_apic_accept_events()` (INIT) と、AMD の `shutdown_interception()` の
+  二つです。
 - CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
   8.3〜8.6 と 9.0 にはこのメンバーが無く、livepatch では足せないため、
   **KVM の直しは入りません**。`kvm_amd` を `nested=0` で読み込んでください。

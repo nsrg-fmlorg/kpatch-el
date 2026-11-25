@@ -1,12 +1,13 @@
 """Apply the fixes of CVE-2026-99288, CVE-2022-3344 and CVE-2026-99312.
 
-usage: extra.py [--kpatch9] <tree> [<kpatch tree>]
+usage: extra.py [--kpatch | --klp] <tree> [<kpatch tree>]
 
 Each part of a fix has one or more forms in tools/extra/<part>.<form>.diff.
 A form is taken only when every hunk applies with no fuzz, and exactly one
 form must.  A part is skipped where the tree has the fix, or (migrate) no
 such code.  The same form is applied to both trees, except KVM's
-with --kpatch9 (see kvm_kpatch9()).  Prints one line,
+in the tree that is built (see kvm_callers()): the second with --kpatch,
+for 8 and 9, the first with --klp, for 10.  Prints one line,
 "<part>=<form>" for each part, and exits 1 when a part has no form, 2 when
 it has several; nothing is written then.
 """
@@ -17,8 +18,10 @@ import subprocess
 import sys
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extra')
-kpatch9 = sys.argv[1] == '--kpatch9'
-trees = sys.argv[2:] if kpatch9 else sys.argv[1:]
+mode = sys.argv[1] if sys.argv[1] in ('--kpatch', '--klp') else None
+trees = sys.argv[2:] if mode else sys.argv[1:]
+MACRO, HEADER = (('KLP_STATIC_CALL', '<linux/livepatch_helpers.h>') if mode == '--klp'
+                 else ('KPATCH_STATIC_CALL', '"kpatch-macros.h"'))
 
 
 def text(f):
@@ -103,10 +106,13 @@ def body(src, start):
     return i, src.index('\n}\n', i) + 3
 
 
-def kvm_kpatch9(t, forced):
-    """KVM on 9 with kpatch-build, which cannot handle kvm's own static
-    calls and static keys, of which kvm_vcpu_reset() has some fifteen,
-    most of them in inline functions of headers.  On AMD an L2 can be
+def kvm_callers(t, forced):
+    """KVM where it is built.  Neither kpatch-build nor klp-build can handle
+    kvm's own static calls and static keys.  On 9 and 10 kvm_vcpu_reset()
+    has some fifteen, most of them in inline functions of headers; on 8 a
+    change to it makes gcc inline other functions of x86.c differently on
+    some kernels (4.18.0-477.27.2.el8_8, 4.18.0-553.87.1.el8_10), which
+    brings in vcpu_enter_guest() with its static keys.  On AMD an L2 can be
     active there on INIT, in kvm_apic_accept_events(), and on SHUTDOWN, in
     shutdown_interception(); the third caller with init_event set, where
     there is one, is for SEV-SNP.  So what the fix does inside
@@ -128,17 +134,17 @@ def kvm_kpatch9(t, forced):
         f = f.replace('!lapic_in_kernel(vcpu)', '!vcpu->arch.apic')
         # 9.1 calls the negation kvm_vcpu_latch_init().
         blocked = ('(is_smm(vcpu) ||\n\t    '
-                   'KPATCH_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))')
+                   f'{MACRO}(kvm_x86_apic_init_signal_blocked)(vcpu))')
         f, k = re.subn(r'!kvm_apic_init_sipi_allowed\(vcpu\)|kvm_vcpu_latch_init\(vcpu\)',
                        lambda m: blocked, f)
         assert k == 1, k
         f, k = re.subn(r'(static_call\(kvm_x86_|kvm_x86_call\()vcpu_deliver_sipi_vector\)',
-                       'KPATCH_STATIC_CALL(kvm_x86_vcpu_deliver_sipi_vector)', f)
+                       f'{MACRO}(kvm_x86_vcpu_deliver_sipi_vector)', f)
         assert k == 1, k
-        assert not re.search(r'(?<!KPATCH_STATIC_CALL\()\b(static_call|kvm_x86_call)\(', f), f
+        assert not re.search(r'\b(static_call|kvm_x86_call)\(', f), f
         s = s[:a] + f + s[b:]
         inc = [m.end() for m in re.finditer(r'^#include .*\n', s, re.M)]
-        return s[:inc[-1]] + '#include "kpatch-macros.h"\n' + s[inc[-1]:]
+        return s[:inc[-1]] + f'#include {HEADER}\n' + s[inc[-1]:]
 
     def svm(s):
         a, b = body(s, 'static int shutdown_interception(struct kvm_vcpu *vcpu)')
@@ -157,18 +163,18 @@ def kvm_kpatch9(t, forced):
 kvm_todo = [d for d in todo if os.path.basename(d).startswith('kvm.')]
 LOCKLESS = 'hlist_nulls_unhashed_lockless(' in text('include/linux/list_nulls.h')
 for n, t in enumerate(trees):
-    k9 = kpatch9 and n == 1 and kvm_todo
-    if k9:
+    callers = kvm_todo and n == {'--kpatch': 1, '--klp': 0}.get(mode)
+    if callers:
         x86 = open(f'{t}/arch/x86/kvm/x86.c', errors='surrogateescape').read()
     for d in todo:
-        if k9 and d in kvm_todo and not d.endswith('kvm.el8.diff'):
+        if callers and d in kvm_todo and not d.endswith('kvm.el8.diff'):
             continue
         r = patch(t, d)
         assert r.returncode == 0, (t, d, r.stdout)
-    if k9:
+    if callers:
         # Only the parts outside x86.c stay.
         open(f'{t}/arch/x86/kvm/x86.c', 'w', errors='surrogateescape').write(x86)
-        kvm_kpatch9(t, kvm_todo[0].endswith('kvm.el8.diff'))
+        kvm_callers(t, kvm_todo[0].endswith('kvm.el8.diff'))
     if not LOCKLESS and any('lookup' in d for d in todo):
         # 8.3 has no such helper; this is what it does.
         for f in ('net/ipv4/inet_hashtables.c', 'net/ipv6/inet6_hashtables.c'):

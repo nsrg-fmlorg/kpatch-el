@@ -49,17 +49,14 @@ upstream's changes, checked against the kernel's source, and appended.
 
 On 4.18.0-553.180.1.el8_10 upstream's KVM changes and NoisyTCP's lookup
 changes apply as they are, except for upstream's `WARN_ON_ONCE()` after
-the reset, which only checks the fix and is left out. With it, gcc
-inlines `kvm_check_request()` into `vcpu_enter_guest()` differently, and
-kpatch-build refuses that function for its jump labels on static keys
-that live in the `kvm` module; without it the function compiles the same
-as in the shipped kernel. NoisyTCP also fixes a refcount in the Fast
+the reset, which only checks the fix and is left out (the KVM part is
+then moved, below). NoisyTCP also fixes a refcount in the Fast
 Open failure path of `tcp_conn_request()`, which upstream writes against
 code where `tcp_disconnect()` has already dropped one reference to the
 request. EL8 has that code from 4.18.0-553.87.1.el8_10 on, where Red Hat
 took the CVE-2025-39955 fix (RHEL-120664), so upstream's hunk applies
 there too. Earlier EL8 kernels still call `reqsk_fastopen_remove()` in
-that path and need it written differently; none of them is covered yet.
+that path and need it written differently (below).
 Upstream's changes to request socket migration have nothing to apply to
 on 8.
 
@@ -71,9 +68,13 @@ fixes, the one form in `tools/extra/` that applies without fuzz:
 - Request socket migration differs in context only, except on kernels
   before upstream 97c8a3c1f73d, where the clone's own timer was left
   armed; those take that change as well, which the fix relies on.
-- On 9, kpatch-build refuses the static calls in `kvm_vcpu_reset()`, which
-  belong to the `kvm` module. What the fix does inside it is done around
-  it instead, in the two callers that can run it while an L2 is active:
+- The KVM fixes leave `arch/x86/kvm/x86.c` alone. On 9 and 10
+  kpatch-build and klp-build refuse the static calls in
+  `kvm_vcpu_reset()`, which belong to the `kvm` module; on some kernels of
+  8 a change to it makes gcc inline other functions of the file
+  differently, and kpatch-build then refuses `vcpu_enter_guest()` for its
+  jump labels. What the fix does inside it is done around it instead, in
+  the two callers that can run it while an L2 is active:
   `kvm_apic_accept_events()` (INIT) and, on AMD, `shutdown_interception()`.
 - CVE-2022-3344's fix calls the `leave_nested` member of
   `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a

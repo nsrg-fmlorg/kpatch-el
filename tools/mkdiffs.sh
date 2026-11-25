@@ -62,8 +62,7 @@ srpms=$(printf '%s\n' "$srclist" | grep -oE 'kernel-[0-9][^"]*\.src\.rpm' | sort
 # regex to every minor.
 srpms=$(printf '%s\n' "$srpms" | grep -E -- "$ONLY")
 
-k9=
-[ "${MINOR%%.*}" = 9 ] && k9=--kpatch9
+case "${MINOR%%.*}" in 10) mode=--klp;; *) mode=--kpatch;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -178,7 +177,7 @@ while read -r srpm; do
 		continue
 	fi
 	# The other three CVEs go on top, in both trees (tools/extra.py).
-	if ! extra=$(python3 -I "$HERE/extra.py" $k9 "$work/b" "$work/k" 2>&1); then
+	if ! extra=$(python3 -I "$HERE/extra.py" $mode "$work/b" "$work/k" 2>&1); then
 		echo "$nvr $snvr EXTRA-FAILED 99999=$match 98432=${fixed98432:+already} $(printf '%s' "$extra" | tail -1)" >> "$RES"
 		mkdir -p "$OUT/src-$nvr"
 		(cd "$work/a" && cp --parents net/ipv4/inet_hashtables.c net/ipv6/inet6_hashtables.c \

@@ -165,13 +165,14 @@ grep -qE '^\+.*(hlist_nulls_unhashed_lockless|READ_ONCE\(sk->sk_nulls_node.pprev
 grep -q '^+++ b/net/ipv4/syncookies.c' "$D" && has="$has syncookies"
 grep -q '^+++ b/net/ipv4/tcp_input.c' "$D" && has="$has fastopen"
 kvmfns= svmfns=
-case $MAJOR in
-9 | 8) grep -q '^+++ b/arch/x86/kvm/x86.c' "$D" && kvmfns=kvm_vcpu_reset ;;
-*) grep -q '^+++ b/arch/x86/kvm/x86.c' "$HERE/../patches/$DISTRO/$NVR.diff" && kvmfns=kvm_vcpu_reset ;;
-esac
-grep -q '^+++ b/arch/x86/kvm/lapic.c' "$D" && kvmfns=kvm_apic_accept_events
-grep -q '^+.*svm_leave_nested(vcpu);' "$D" && svmfns="svm_vcpu_free svm_free_nested"
-grep -q '^+.*kvm_mmu_reset_context' "$D" && grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$D" &&
+# The KVM part differs between the two forms of the port; take it from the
+# one that was built.
+KD=$D
+case $MAJOR in 9 | 8) ;; *) KD=$HERE/../patches/$DISTRO/$NVR.diff ;; esac
+grep -q '^+++ b/arch/x86/kvm/x86.c' "$KD" && kvmfns=kvm_vcpu_reset
+grep -q '^+++ b/arch/x86/kvm/lapic.c' "$KD" && kvmfns=kvm_apic_accept_events
+grep -q '^+.*svm_leave_nested(vcpu);' "$KD" && svmfns="svm_vcpu_free svm_free_nested"
+grep -q '^+.*kvm_mmu_reset_context' "$KD" && grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$KD" &&
 	[ "$kvmfns" = kvm_apic_accept_events ] && svmfns="$svmfns shutdown_interception"
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=
