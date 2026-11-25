@@ -17,7 +17,7 @@ once it passes.
 | CVE-2026-98432 | use after free of IP options on TCP request and child sockets | e3f33b0a1d89 |
 | CVE-2026-99999 | "PwnEscape": a crafted checksum_start lets the checksum code overwrite an IPv4 header already parsed; on kernels without the fix | |
 | CVE-2026-99288 | "NoisyTCP": unhashed sockets accepted by the lockless established lookup, remote kernel panic | 4e2b3ef19e0e |
-| CVE-2022-3344 | KVM nested SVM: a vCPU reset while L2 is active, host crash | 917401f26a6a, 16ae56d7e052, f9697df25143, ed129ec9057f, 05311ce954ae |
+| CVE-2022-3344 | KVM nested SVM: a vCPU reset while L2 is active, host crash | 917401f26a6a, 16ae56d7e052, f9697df25143, ed129ec9057f |
 | CVE-2026-99312 | KVM: stale MMU context after INIT while L2 is active | c7c288d178cb |
 
 The two KVM fixes matter on AMD hosts with nested virtualization enabled
@@ -79,6 +79,10 @@ fixes, the one form in `tools/extra/` that applies without fuzz:
   On 10 the latter sets CR0.PG before the reset, which makes
   `kvm_vcpu_reset()` reset the MMU itself: klp-build cannot add a call
   from `kvm_amd` to `kvm`.
+- 05311ce954ae of the CVE-2022-3344 series, which only drops a printk
+  from `svm_handle_exit()`, is left out: kpatch-build silently removes a
+  tracepoint that lives in a module from a function it replaces, and
+  `kvm_exit` and `kvm_nested_vmexit` would go away on AMD hosts.
 - CVE-2022-3344's fix calls the `leave_nested` member of
   `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a
   livepatch cannot add one, so **they get no KVM fix**: load `kvm_amd`

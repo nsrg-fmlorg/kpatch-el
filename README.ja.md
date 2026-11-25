@@ -17,7 +17,7 @@ livepatch モジュールで、下の直しのうちそのカーネルに無い�
 | CVE-2026-98432 | TCP の request socket と子 socket の IP オプションの解放後使用 | e3f33b0a1d89 |
 | CVE-2026-99999 | 「PwnEscape」: 細工した checksum_start で、checksum の処理が解析済みの IPv4 ヘッダを上書きする。直しの無いカーネルだけ | |
 | CVE-2026-99288 | 「NoisyTCP」: ロックなしの established 検索がハッシュから外れた socket を受け入れ、遠隔からカーネルを落とせる | 4e2b3ef19e0e |
-| CVE-2022-3344 | KVM の nested SVM: L2 の実行中に vCPU をリセットすると、ホストが落ちる | 917401f26a6a, 16ae56d7e052, f9697df25143, ed129ec9057f, 05311ce954ae |
+| CVE-2022-3344 | KVM の nested SVM: L2 の実行中に vCPU をリセットすると、ホストが落ちる | 917401f26a6a, 16ae56d7e052, f9697df25143, ed129ec9057f |
 | CVE-2026-99312 | KVM: L2 の実行中の INIT の後に古い MMU の状態が残る | c7c288d178cb |
 
 KVM の二つが効くのは、nested 仮想化を有効にした AMD のホスト
@@ -80,6 +80,10 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
   二つです。10 の後者では、リセットの前に CR0.PG を立て、
   `kvm_vcpu_reset()` 自身に MMU をリセットさせます。`kvm_amd` から `kvm` への
   新しい呼び出しを、klp-build が足せないためです。
+- CVE-2022-3344 の系列のうち、`svm_handle_exit()` の printk を消すだけの
+  05311ce954ae は入れていません。kpatch-build は、モジュールにある
+  tracepoint を、差し替える関数から黙って取り除きます。AMD のホストで
+  `kvm_exit` と `kvm_nested_vmexit` が出なくなるためです。
 - CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
   8.3〜8.6 と 9.0 にはこのメンバーが無く、livepatch では足せないため、
   **KVM の直しは入りません**。`kvm_amd` を `nested=0` で読み込んでください。
