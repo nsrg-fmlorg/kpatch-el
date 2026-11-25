@@ -1,40 +1,60 @@
-diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
---- a/arch/x86/kvm/x86.c
-+++ b/arch/x86/kvm/x86.c
-@@ -13038,18 +13038,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
- 	kvm_x86_call(set_efer)(vcpu, 0);
- 	kvm_x86_call(update_exception_bitmap)(vcpu);
+diff --git a/arch/x86/kvm/lapic.c b/arch/x86/kvm/lapic.c
+--- a/arch/x86/kvm/lapic.c
++++ b/arch/x86/kvm/lapic.c
+@@ -46,6 +46,7 @@
+ #include "cpuid.h"
+ #include "hyperv.h"
+ #include "smm.h"
++#include <linux/livepatch_helpers.h>
  
-+	if (old_cr0 & X86_CR0_PG)
-+		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
-+
- 	/*
--	 * On the standard CR0/CR4/EFER modification paths, there are several
--	 * complex conditions determining whether the MMU has to be reset and/or
--	 * which PCIDs have to be flushed.  However, CR0.WP and the paging-related
--	 * bits in CR4 and EFER are irrelevant if CR0.PG was '0'; and a reset+flush
--	 * is needed anyway if CR0.PG was '1' (which can only happen for INIT, as
--	 * CR0 will be '0' prior to RESET).  So we only need to check CR0.PG here.
-+	 * Unconditionally reset the MMU, even though super strictly speaking,
-+	 * a MMU reset is only necessary if and only one of the page role bits
-+	 * is changing.  All of the CR0/CR4/EFER bits effectively get covered
-+	 * by checking CR0.PG=1, as CR0.WP and the paging-related bits in CR4
-+	 * and EFER are irrelevant if CR0.PG was '0'.  Subtly, if the vCPU was
-+	 * in guest mode (L2) or SMM (although emulating INIT in SMM _should_
-+	 * be impossible), an MMU reset is also necessary as "guest mode" and
-+	 * "smm" are both encoded in the shadow page role.  As a result, the
-+	 * only scenarios where an MMU reset is *not* needed is if the vCPU is
-+	 * in Real Mode or Unpaged Protected Mode, and micro-optimizing those
-+	 * paths are not worth the risk of running with a stale MMU context.
+ #ifndef CONFIG_X86_64
+ #define mod_64(x, y) ((x) - (y) * div64_u64(x, y))
+@@ -3527,7 +3528,7 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 	u8 sipi_vector;
+ 	int r;
+ 
+-	if (!kvm_apic_has_pending_init_or_sipi(vcpu))
++	if (!(vcpu->arch.apic && vcpu->arch.apic->pending_events))
+ 		return 0;
+ 
+ 	if (is_guest_mode(vcpu)) {
+@@ -3546,13 +3547,15 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 	 * mode, SVM with GIF=0), while SIPIs are dropped if the CPU isn't in
+ 	 * wait-for-SIPI (WFS).
  	 */
--	if (old_cr0 & X86_CR0_PG) {
--		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
--		kvm_mmu_reset_context(vcpu);
--	}
-+	kvm_mmu_reset_context(vcpu);
+-	if (!kvm_apic_init_sipi_allowed(vcpu)) {
++	if ((is_smm(vcpu) ||
++	    KLP_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))) {
+ 		clear_bit(KVM_APIC_SIPI, &apic->pending_events);
+ 		return 0;
+ 	}
  
- 	/*
- 	 * Intel's SDM states that all TLB entries are flushed on INIT.  AMD's
+ 	if (test_and_clear_bit(KVM_APIC_INIT, &apic->pending_events)) {
+ 		kvm_vcpu_reset(vcpu, true);
++		kvm_mmu_reset_context(vcpu);
+ 		if (kvm_vcpu_is_bsp(apic->vcpu))
+ 			kvm_set_mp_state(vcpu, KVM_MP_STATE_RUNNABLE);
+ 		else
+@@ -3563,7 +3566,7 @@ int kvm_apic_accept_events(struct kvm_vcpu *vcpu)
+ 			/* evaluate pending_events before reading the vector */
+ 			smp_rmb();
+ 			sipi_vector = apic->sipi_vector;
+-			kvm_x86_call(vcpu_deliver_sipi_vector)(vcpu,
++			KLP_STATIC_CALL(kvm_x86_vcpu_deliver_sipi_vector)(vcpu,
+ 							       sipi_vector);
+ 			kvm_set_mp_state(vcpu, KVM_MP_STATE_RUNNABLE);
+ 		}
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -2116,6 +2116,7 @@ static int shutdown_interception(struct kvm_vcpu *vcpu)
+ 			kvm_smm_changed(vcpu, false);
+ #endif
+ 		kvm_vcpu_reset(vcpu, true);
++		kvm_mmu_reset_context(vcpu);
+ 	}
+ 
+ 	kvm_run->exit_reason = KVM_EXIT_SHUTDOWN;
 diff --git a/net/ipv4/inet_connection_sock.c b/net/ipv4/inet_connection_sock.c
 --- a/net/ipv4/inet_connection_sock.c
 +++ b/net/ipv4/inet_connection_sock.c
