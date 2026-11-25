@@ -63,6 +63,19 @@ that path and need it written differently; none of them is covered yet.
 Upstream's changes to request socket migration have nothing to apply to
 on 8.
 
+For the other kernels `tools/extra.py` takes, for each part of those
+fixes, the one form in `tools/extra/` that applies without fuzz:
+
+- Where the Fast Open failure path still calls `reqsk_fastopen_remove()`,
+  that call has dropped one reference, so only the other is put.
+- Request socket migration differs in context only, except on kernels
+  before upstream c31e73121f4c, where the clone's own timer was left
+  armed; those take that change as well, which the fix relies on.
+- CVE-2022-3344's fix calls the `leave_nested` member of
+  `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a
+  livepatch cannot add one, so **they get no KVM fix**: load `kvm_amd`
+  with `nested=0` there.
+
 `tools/mkdiffs.sh` ports CVE-2026-98432 to every kernel SRPM of a minor,
 after applying the SRPM's own patches to its tarball as `%prep` does
 (`tools/prep.py`), and checks the changed lines against `tools/ref/`.
@@ -104,6 +117,7 @@ one over it with `scripts/livepatch.sh`, and checks that:
 | `tools/mkdiffs.sh` | Makes CVE-2026-98432's port for every kernel of a minor and checks it against `tools/ref/` |
 | `tools/prep.py` | Applies an SRPM's own patches to its tarball, as `%prep` does, before porting |
 | `tools/port.py` | CVE-2026-98432's change, applied to a kernel tree |
+| `tools/extra.py`, `tools/extra/` | Applies the fixes of the other three CVEs, in the form that fits the kernel |
 | `tools/kpatchify.py` | Turns a port into the form fed to kpatch-build |
 | `tools/klp-overlay.sh`, `tools/klp-overlay-lds.py`, `tools/klp-overlay/` | Lends 10.2's klp-build to 10.0 and 10.1 |
 | `tools/klpsymcheck.py` | Checks a klp-build module's symbols against the shipped kernel |

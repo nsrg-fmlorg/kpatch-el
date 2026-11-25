@@ -10,7 +10,7 @@ for top in ('tools', 'scripts', '.github/workflows'):
     for d, _, fs in os.walk(os.path.join(root, top)):
         for f in fs:
             p = os.path.relpath(os.path.join(d, f), root)
-            if p.startswith('tools/ref/') or '__pycache__' in p:
+            if p.startswith(('tools/ref/', 'tools/extra/')) or '__pycache__' in p:
                 continue
             files.append(p)
 for readme in ('README.md', 'README.ja.md'):

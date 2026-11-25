@@ -64,6 +64,19 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
 まだ一つも対象にしていません。upstream の request socket の移し替えの
 変更は、8 には当てる先がありません。
 
+ほかのカーネルでは `tools/extra.py` が、直しの部分ごとに、`tools/extra/` の
+うち曖昧さなしに当たる一つの形を選びます。
+
+- Fast Open の失敗の経路で、まだ `reqsk_fastopen_remove()` を呼ぶものは、
+  その呼び出しが参照を一つ落としているので、残りの一つだけを落とします。
+- request socket の移し替えは文脈が違うだけです。ただし upstream の
+  c31e73121f4c より前のカーネルは、複製した request のタイマーを動かした
+  ままにしており、この直しはそれが止まっていることを前提にしているので、
+  その変更も入れます。
+- CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
+  8.3〜8.6 と 9.0 にはこのメンバーが無く、livepatch では足せないため、
+  **KVM の直しは入りません**。`kvm_amd` を `nested=0` で読み込んでください。
+
 `tools/mkdiffs.sh` は、SRPM 自身のパッチを `%prep` と同じように tarball に
 当ててから (`tools/prep.py`)、minor の全カーネルに CVE-2026-98432 を移植し、
 変えた行を `tools/ref/` と突き合わせます。
@@ -104,6 +117,7 @@ VM で起動します (`tools/loadtest.sh`)。VM の中で
 | `tools/mkdiffs.sh` | minor の全カーネルに CVE-2026-98432 を移植し、`tools/ref/` と突き合わせる |
 | `tools/prep.py` | 移植の前に、SRPM 自身のパッチを `%prep` と同じように tarball に当てる |
 | `tools/port.py` | CVE-2026-98432 の変更をカーネルのツリーに当てる |
+| `tools/extra.py`、`tools/extra/` | 残りの三つの CVE の直しを、カーネルに合う形で当てる |
 | `tools/kpatchify.py` | 移植を kpatch-build に渡す形にする |
 | `tools/klp-overlay.sh`、`tools/klp-overlay-lds.py`、`tools/klp-overlay/` | 10.2 の klp-build を 10.0 と 10.1 に貸す |
 | `tools/klpsymcheck.py` | klp-build のモジュールのシンボルを、配布されたカーネルと突き合わせる |
