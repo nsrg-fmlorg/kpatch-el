@@ -1,0 +1,274 @@
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -13038,18 +13038,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
+ 	kvm_x86_call(set_efer)(vcpu, 0);
+ 	kvm_x86_call(update_exception_bitmap)(vcpu);
+ 
++	if (old_cr0 & X86_CR0_PG)
++		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
++
+ 	/*
+-	 * On the standard CR0/CR4/EFER modification paths, there are several
+-	 * complex conditions determining whether the MMU has to be reset and/or
+-	 * which PCIDs have to be flushed.  However, CR0.WP and the paging-related
+-	 * bits in CR4 and EFER are irrelevant if CR0.PG was '0'; and a reset+flush
+-	 * is needed anyway if CR0.PG was '1' (which can only happen for INIT, as
+-	 * CR0 will be '0' prior to RESET).  So we only need to check CR0.PG here.
++	 * Unconditionally reset the MMU, even though super strictly speaking,
++	 * a MMU reset is only necessary if and only one of the page role bits
++	 * is changing.  All of the CR0/CR4/EFER bits effectively get covered
++	 * by checking CR0.PG=1, as CR0.WP and the paging-related bits in CR4
++	 * and EFER are irrelevant if CR0.PG was '0'.  Subtly, if the vCPU was
++	 * in guest mode (L2) or SMM (although emulating INIT in SMM _should_
++	 * be impossible), an MMU reset is also necessary as "guest mode" and
++	 * "smm" are both encoded in the shadow page role.  As a result, the
++	 * only scenarios where an MMU reset is *not* needed is if the vCPU is
++	 * in Real Mode or Unpaged Protected Mode, and micro-optimizing those
++	 * paths are not worth the risk of running with a stale MMU context.
+ 	 */
+-	if (old_cr0 & X86_CR0_PG) {
+-		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
+-		kvm_mmu_reset_context(vcpu);
+-	}
++	kvm_mmu_reset_context(vcpu);
+ 
+ 	/*
+ 	 * Intel's SDM states that all TLB entries are flushed on INIT.  AMD's
+diff --git a/include/net/ip.h b/include/net/ip.h
+--- a/include/net/ip.h
++++ b/include/net/ip.h
+@@ -74,6 +74,13 @@ static inline unsigned int ip_hdrlen(const struct sk_buff *skb)
+ 	return ip_hdr(skb)->ihl * 4;
+ }
+ 
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++{
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++		return -EINVAL;
++	return 0;
++}
++
+ struct ipcm_cookie {
+ 	struct sockcm_cookie	sockc;
+ 	__be32			addr;
+diff --git a/net/bridge/netfilter/nf_conntrack_bridge.c b/net/bridge/netfilter/nf_conntrack_bridge.c
+--- a/net/bridge/netfilter/nf_conntrack_bridge.c
++++ b/net/bridge/netfilter/nf_conntrack_bridge.c
+@@ -39,9 +39,13 @@ static int nf_br_ip_fragment(struct net *net, struct sock *sk,
+ 	int err = 0;
+ 
+ 	/* for offloaded checksums cleanup checksum before fragmentation */
+-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+-	    (err = skb_checksum_help(skb)))
+-		goto blackhole;
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++		err = ip_check_csum_start(skb);
++		if (!err)
++			err = skb_checksum_help(skb);
++		if (err)
++			goto blackhole;
++	}
+ 
+ 	iph = ip_hdr(skb);
+ 
+diff --git a/net/ipv4/inet_connection_sock.c b/net/ipv4/inet_connection_sock.c
+--- a/net/ipv4/inet_connection_sock.c
++++ b/net/ipv4/inet_connection_sock.c
+@@ -1142,7 +1142,7 @@ static void reqsk_timer_handler(struct timer_list *t)
+ 
+ 		if (!inet_ehash_insert(req_to_sk(nreq), req_to_sk(oreq), NULL)) {
+ 			/* delete timer */
+-			__inet_csk_reqsk_queue_drop(sk_listener, nreq, true);
++			__inet_csk_reqsk_queue_drop(sk_listener, nreq, false);
+ 			goto no_ownership;
+ 		}
+ 
+@@ -1161,10 +1161,14 @@ static void reqsk_timer_handler(struct timer_list *t)
+ 	 */
+ 	if (nreq) {
+ 		__NET_INC_STATS(net, LINUX_MIB_TCPMIGRATEREQFAILURE);
++		/* The timer was not armed, drop its reference here. */
++		reqsk_put(nreq);
+ no_ownership:
+ 		reqsk_migrate_reset(nreq);
+ 		reqsk_queue_removed(queue, nreq);
+-		__reqsk_free(nreq);
++		/* Drop the temporary reference and the one reserved for ehash. */
++		reqsk_put(nreq);
++		reqsk_put(nreq);
+ 	}
+ 
+ drop:
+@@ -1433,7 +1437,7 @@ struct sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
+ 
+ 			__NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMIGRATEREQFAILURE);
+ 			reqsk_migrate_reset(nreq);
+-			__reqsk_free(nreq);
++			reqsk_put(nreq);
+ 		} else if (inet_csk_reqsk_queue_add(sk, req, child)) {
+ 			return child;
+ 		}
+@@ -1488,7 +1492,7 @@ void inet_csk_listen_stop(struct sock *sk)
+ 					__NET_INC_STATS(sock_net(nsk),
+ 							LINUX_MIB_TCPMIGRATEREQFAILURE);
+ 					reqsk_migrate_reset(nreq);
+-					__reqsk_free(nreq);
++					reqsk_put(nreq);
+ 				}
+ 				rcu_read_unlock();
+ 
+diff --git a/net/ipv4/inet_hashtables.c b/net/ipv4/inet_hashtables.c
+--- a/net/ipv4/inet_hashtables.c
++++ b/net/ipv4/inet_hashtables.c
+@@ -513,8 +513,9 @@ begin:
+ 		if (likely(inet_match(net, sk, acookie, ports, dif, sdif))) {
+ 			if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+ 				goto out;
+-			if (unlikely(!inet_match(net, sk, acookie,
+-						 ports, dif, sdif))) {
++			if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++				     !inet_match(net, sk, acookie, ports, dif,
++						 sdif))) {
+ 				sock_gen_put(sk);
+ 				goto begin;
+ 			}
+diff --git a/net/ipv4/ip_output.c b/net/ipv4/ip_output.c
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -780,9 +780,13 @@ int ip_do_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
+ 	int err = 0;
+ 
+ 	/* for offloaded checksums cleanup checksum before fragmentation */
+-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+-	    (err = skb_checksum_help(skb)))
+-		goto fail;
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++		err = ip_check_csum_start(skb);
++		if (!err)
++			err = skb_checksum_help(skb);
++		if (err)
++			goto fail;
++	}
+ 
+ 	/*
+ 	 *	Point into the IP datagram header.
+diff --git a/net/ipv4/syncookies.c b/net/ipv4/syncookies.c
+--- a/net/ipv4/syncookies.c
++++ b/net/ipv4/syncookies.c
+@@ -217,6 +217,8 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
+ 
+ 		bh_unlock_sock(child);
+ 		sock_put(child);
++		reqsk_put(req);
++		return NULL;
+ 	}
+ 	__reqsk_free(req);
+ 
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -7353,7 +7353,9 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
+ 		if (!inet_csk_reqsk_queue_add(sk, req, fastopen_sk)) {
+ 			bh_unlock_sock(fastopen_sk);
+ 			sock_put(fastopen_sk);
+-			goto drop_and_free;
++			/* tcp_disconnect() already dropped one reqsk ref. */
++			reqsk_put(req);
++			goto drop;
+ 		}
+ 		sk->sk_data_ready(sk);
+ 		bh_unlock_sock(fastopen_sk);
+diff --git a/net/ipv6/inet6_hashtables.c b/net/ipv6/inet6_hashtables.c
+--- a/net/ipv6/inet6_hashtables.c
++++ b/net/ipv6/inet6_hashtables.c
+@@ -73,7 +73,9 @@ begin:
+ 		if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+ 			goto out;
+ 
+-		if (unlikely(!inet6_match(net, sk, saddr, daddr, ports, dif, sdif))) {
++		if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++			     !inet6_match(net, sk, saddr, daddr, ports, dif,
++					  sdif))) {
+ 			sock_gen_put(sk);
+ 			goto begin;
+ 		}
+diff --git a/net/netfilter/nfnetlink_queue.c b/net/netfilter/nfnetlink_queue.c
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -40,6 +40,7 @@
+ #include <linux/udp.h>
+ #include <net/gre.h>
+ #include <net/gso.h>
++#include <net/ip.h>
+ #include <net/sock.h>
+ #include <net/tcp_states.h>
+ #include <net/netfilter/nf_queue.h>
+@@ -654,6 +655,12 @@ nla_put_failure:
+ 
+ static int nf_queue_checksum_help(struct sk_buff *entskb)
+ {
++	if (entskb->protocol == htons(ETH_P_IP)) {
++		if (!pskb_network_may_pull(entskb, sizeof(struct iphdr)) ||
++		    ip_check_csum_start(entskb))
++			return -EINVAL;
++	}
++
+ 	if (skb_csum_is_sctp(entskb))
+ 		return skb_crc32c_csum_help(entskb);
+ 
+diff --git a/net/netfilter/xt_CHECKSUM.c b/net/netfilter/xt_CHECKSUM.c
+--- a/net/netfilter/xt_CHECKSUM.c
++++ b/net/netfilter/xt_CHECKSUM.c
+@@ -15,6 +15,7 @@
+ 
+ #include <linux/netfilter_ipv4/ip_tables.h>
+ #include <linux/netfilter_ipv6/ip6_tables.h>
++#include <net/ip.h>
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Michael S. Tsirkin <mst@redhat.com>");
+@@ -25,8 +26,11 @@ MODULE_ALIAS("ip6t_CHECKSUM");
+ static unsigned int
+ checksum_tg(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+-	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb))
++	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb)) {
++		if (xt_family(par) == NFPROTO_IPV4 && ip_check_csum_start(skb))
++			return NF_DROP;
+ 		skb_checksum_help(skb);
++	}
+ 
+ 	return XT_CONTINUE;
+ }
+diff --git a/net/xfrm/xfrm_output.c b/net/xfrm/xfrm_output.c
+--- a/net/xfrm/xfrm_output.c
++++ b/net/xfrm/xfrm_output.c
+@@ -816,16 +816,22 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
+ 	}
+ 
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+-		err = skb_checksum_help(skb);
+-		if (err) {
+-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+-			kfree_skb(skb);
+-			return err;
++		if (skb->protocol == htons(ETH_P_IP)) {
++			err = ip_check_csum_start(skb);
++			if (err)
++				goto error;
+ 		}
++		err = skb_checksum_help(skb);
++		if (err)
++			goto error;
+ 	}
+ 
+ out:
+ 	return xfrm_output2(net, sk, skb);
++error:
++	XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
++	kfree_skb(skb);
++	return err;
+ }
+ EXPORT_SYMBOL_GPL(xfrm_output);
+ 
