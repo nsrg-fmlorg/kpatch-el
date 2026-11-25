@@ -187,7 +187,11 @@ fi
 # The old loop skipped objects without the file and so checked nothing
 # on 4.18.
 # Nothing in kvm_intel changes, so it is no object of the livepatch.
-want="vmlinux"
+# The last 9.9 and 10.3 kernels have the network fixes, and only KVM is left.
+want=
+if [ -n "$need99999" ] || has 98432 || has lookup || has syncookies || has fastopen; then
+	want=vmlinux
+fi
 has kvm && want="$want kvm"
 has svm && [ "$kvmvendor" = kvm_amd ] && want="$want kvm_amd"
 [ -n "$need99999" ] && want="$want nfnetlink_queue xt_CHECKSUM"
