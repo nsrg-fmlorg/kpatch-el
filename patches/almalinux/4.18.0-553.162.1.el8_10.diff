@@ -1,0 +1,381 @@
+diff --git a/arch/x86/kvm/svm/nested.c b/arch/x86/kvm/svm/nested.c
+--- a/arch/x86/kvm/svm/nested.c
++++ b/arch/x86/kvm/svm/nested.c
+@@ -1083,6 +1083,9 @@ void svm_free_nested(struct vcpu_svm *svm)
+ 	if (!svm->nested.initialized)
+ 		return;
+ 
++	if (WARN_ON_ONCE(svm->vmcb != svm->vmcb01.ptr))
++		svm_switch_vmcb(svm, &svm->vmcb01);
++
+ 	svm_vcpu_free_msrpm(svm->nested.msrpm);
+ 	svm->nested.msrpm = NULL;
+ 
+@@ -1101,9 +1104,6 @@ void svm_free_nested(struct vcpu_svm *svm)
+ 	svm->nested.initialized = false;
+ }
+ 
+-/*
+- * Forcibly leave nested mode in order to be able to reset the VCPU later on.
+- */
+ void svm_leave_nested(struct kvm_vcpu *vcpu)
+ {
+ 	struct vcpu_svm *svm = to_svm(vcpu);
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -351,12 +351,6 @@ int svm_set_efer(struct kvm_vcpu *vcpu, u64 efer)
+ 	return 0;
+ }
+ 
+-static int is_external_interrupt(u32 info)
+-{
+-	info &= SVM_EVTINJ_TYPE_MASK | SVM_EVTINJ_VALID;
+-	return info == (SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR);
+-}
+-
+ static u32 svm_get_interrupt_shadow(struct kvm_vcpu *vcpu)
+ {
+ 	struct vcpu_svm *svm = to_svm(vcpu);
+@@ -1397,6 +1391,7 @@ static void svm_vcpu_free(struct kvm_vcpu *vcpu)
+ 	 */
+ 	svm_clear_current_vmcb(svm->vmcb);
+ 
++	svm_leave_nested(vcpu);
+ 	svm_free_nested(svm);
+ 
+ 	sev_free_vcpu(vcpu);
+@@ -3369,15 +3364,6 @@ static int svm_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+ 		return 0;
+ 	}
+ 
+-	if (is_external_interrupt(svm->vmcb->control.exit_int_info) &&
+-	    exit_code != SVM_EXIT_EXCP_BASE + PF_VECTOR &&
+-	    exit_code != SVM_EXIT_NPF && exit_code != SVM_EXIT_TASK_SWITCH &&
+-	    exit_code != SVM_EXIT_INTR && exit_code != SVM_EXIT_NMI)
+-		printk(KERN_ERR "%s: unexpected exit_int_info 0x%x "
+-		       "exit_code 0x%x\n",
+-		       __func__, svm->vmcb->control.exit_int_info,
+-		       exit_code);
+-
+ 	if (exit_fastpath != EXIT_FASTPATH_NONE)
+ 		return 1;
+ 
+diff --git a/arch/x86/kvm/vmx/nested.c b/arch/x86/kvm/vmx/nested.c
+--- a/arch/x86/kvm/vmx/nested.c
++++ b/arch/x86/kvm/vmx/nested.c
+@@ -6345,9 +6345,6 @@ out:
+ 	return kvm_state.size;
+ }
+ 
+-/*
+- * Forcibly leave nested mode in order to be able to reset the VCPU later on.
+- */
+ void vmx_leave_nested(struct kvm_vcpu *vcpu)
+ {
+ 	if (is_guest_mode(vcpu)) {
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -612,6 +612,12 @@ void kvm_deliver_exception_payload(struct kvm_vcpu *vcpu)
+ }
+ EXPORT_SYMBOL_GPL(kvm_deliver_exception_payload);
+ 
++/* Forcibly leave the nested mode in cases like a vCPU reset */
++static void kvm_leave_nested(struct kvm_vcpu *vcpu)
++{
++	kvm_x86_ops.nested_ops->leave_nested(vcpu);
++}
++
+ static void kvm_multiple_exception(struct kvm_vcpu *vcpu,
+ 		unsigned nr, bool has_error, u32 error_code,
+ 	        bool has_payload, unsigned long payload, bool reinject)
+@@ -5032,7 +5038,7 @@ static int kvm_vcpu_ioctl_x86_set_vcpu_events(struct kvm_vcpu *vcpu,
+ 
+ 	if (events->flags & KVM_VCPUEVENT_VALID_SMM) {
+ 		if (!!(vcpu->arch.hflags & HF_SMM_MASK) != events->smi.smm) {
+-			kvm_x86_ops.nested_ops->leave_nested(vcpu);
++			kvm_leave_nested(vcpu);
+ 			kvm_smm_changed(vcpu, events->smi.smm);
+ 		}
+ 
+@@ -11205,6 +11211,15 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
+ 	WARN_ON_ONCE(!init_event &&
+ 		     (old_cr0 || kvm_read_cr3(vcpu) || kvm_read_cr4(vcpu)));
+ 
++	/*
++	 * SVM doesn't unconditionally VM-Exit on INIT and SHUTDOWN, thus it's
++	 * possible to INIT the vCPU while L2 is active.  Force the vCPU back
++	 * into L1 as EFER.SVME is cleared on INIT (along with all other EFER
++	 * bits), i.e. virtualization is disabled.
++	 */
++	if (is_guest_mode(vcpu))
++		kvm_leave_nested(vcpu);
++
+ 	kvm_lapic_reset(vcpu, init_event);
+ 
+ 	vcpu->arch.hflags = 0;
+@@ -11301,18 +11316,23 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
+ 	static_call(kvm_x86_set_efer)(vcpu, 0);
+ 	static_call(kvm_x86_update_exception_bitmap)(vcpu);
+ 
++	if (old_cr0 & X86_CR0_PG)
++		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
++
+ 	/*
+-	 * On the standard CR0/CR4/EFER modification paths, there are several
+-	 * complex conditions determining whether the MMU has to be reset and/or
+-	 * which PCIDs have to be flushed.  However, CR0.WP and the paging-related
+-	 * bits in CR4 and EFER are irrelevant if CR0.PG was '0'; and a reset+flush
+-	 * is needed anyway if CR0.PG was '1' (which can only happen for INIT, as
+-	 * CR0 will be '0' prior to RESET).  So we only need to check CR0.PG here.
++	 * Unconditionally reset the MMU, even though super strictly speaking,
++	 * a MMU reset is only necessary if and only one of the page role bits
++	 * is changing.  All of the CR0/CR4/EFER bits effectively get covered
++	 * by checking CR0.PG=1, as CR0.WP and the paging-related bits in CR4
++	 * and EFER are irrelevant if CR0.PG was '0'.  Subtly, if the vCPU was
++	 * in guest mode (L2) or SMM (although emulating INIT in SMM _should_
++	 * be impossible), an MMU reset is also necessary as "guest mode" and
++	 * "smm" are both encoded in the shadow page role.  As a result, the
++	 * only scenarios where an MMU reset is *not* needed is if the vCPU is
++	 * in Real Mode or Unpaged Protected Mode, and micro-optimizing those
++	 * paths are not worth the risk of running with a stale MMU context.
+ 	 */
+-	if (old_cr0 & X86_CR0_PG) {
+-		kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
+-		kvm_mmu_reset_context(vcpu);
+-	}
++	kvm_mmu_reset_context(vcpu);
+ 
+ 	/*
+ 	 * Intel's SDM states that all TLB entries are flushed on INIT.  AMD's
+diff --git a/include/net/ip.h b/include/net/ip.h
+--- a/include/net/ip.h
++++ b/include/net/ip.h
+@@ -67,6 +67,13 @@ static inline unsigned int ip_hdrlen(const struct sk_buff *skb)
+ 	return ip_hdr(skb)->ihl * 4;
+ }
+ 
++static inline int ip_check_csum_start(const struct sk_buff *skb)
++{
++	if (unlikely(skb->csum_start < skb->network_header + ip_hdrlen(skb)))
++		return -EINVAL;
++	return 0;
++}
++
+ struct ipcm_cookie {
+ 	struct sockcm_cookie	sockc;
+ 	__be32			addr;
+diff --git a/net/core/dev.c b/net/core/dev.c
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -3398,6 +3398,7 @@ int skb_crc32c_csum_help(struct sk_buff *skb)
+ out:
+ 	return ret;
+ }
++EXPORT_SYMBOL(skb_crc32c_csum_help);
+ 
+ __be16 skb_network_protocol(struct sk_buff *skb, int *depth)
+ {
+diff --git a/net/ipv4/af_inet.c b/net/ipv4/af_inet.c
+--- a/net/ipv4/af_inet.c
++++ b/net/ipv4/af_inet.c
+@@ -155,7 +155,7 @@ void inet_sock_destruct(struct sock *sk)
+ 	WARN_ON(sk->sk_wmem_queued);
+ 	WARN_ON(sk->sk_forward_alloc);
+ 
+-	kfree(rcu_dereference_protected(inet->inet_opt, 1));
++	kfree_rcu(rcu_dereference_protected(inet->inet_opt, 1), rcu);
+ 	dst_release(rcu_dereference_check(sk->sk_dst_cache, 1));
+ 	dst_release(rcu_dereference_protected(sk->sk_rx_dst, 1));
+ 	sk_refcnt_debug_dec(sk);
+diff --git a/net/ipv4/inet_hashtables.c b/net/ipv4/inet_hashtables.c
+--- a/net/ipv4/inet_hashtables.c
++++ b/net/ipv4/inet_hashtables.c
+@@ -459,7 +459,8 @@ begin:
+ 				      saddr, daddr, ports, dif, sdif))) {
+ 			if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+ 				goto out;
+-			if (unlikely(!INET_MATCH(sk, net, acookie,
++			if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++				     !INET_MATCH(sk, net, acookie,
+ 						 saddr, daddr, ports,
+ 						 dif, sdif))) {
+ 				sock_gen_put(sk);
+diff --git a/net/ipv4/ip_output.c b/net/ipv4/ip_output.c
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -615,9 +615,13 @@ int ip_do_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
+ 	ktime_t tstamp = skb->tstamp;
+ 
+ 	/* for offloaded checksums cleanup checksum before fragmentation */
+-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+-	    (err = skb_checksum_help(skb)))
+-		goto fail;
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++		err = ip_check_csum_start(skb);
++		if (!err)
++			err = skb_checksum_help(skb);
++		if (err)
++			goto fail;
++	}
+ 
+ 	/*
+ 	 *	Point into the IP datagram header.
+diff --git a/net/ipv4/syncookies.c b/net/ipv4/syncookies.c
+--- a/net/ipv4/syncookies.c
++++ b/net/ipv4/syncookies.c
+@@ -227,6 +227,8 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
+ 
+ 		bh_unlock_sock(child);
+ 		sock_put(child);
++		reqsk_put(req);
++		return NULL;
+ 	}
+ 	__reqsk_free(req);
+ 
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -6853,7 +6853,9 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
+ 		if (!inet_csk_reqsk_queue_add(sk, req, fastopen_sk)) {
+ 			bh_unlock_sock(fastopen_sk);
+ 			sock_put(fastopen_sk);
+-			goto drop_and_free;
++			/* tcp_disconnect() already dropped one reqsk ref. */
++			reqsk_put(req);
++			goto drop;
+ 		}
+ 		sk->sk_data_ready(sk);
+ 		bh_unlock_sock(fastopen_sk);
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -1009,7 +1009,7 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
+  */
+ static void tcp_v4_reqsk_destructor(struct request_sock *req)
+ {
+-	kfree(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1));
++	kfree_rcu(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1), rcu);
+ }
+ 
+ #ifdef CONFIG_TCP_MD5SIG
+diff --git a/net/ipv6/inet6_hashtables.c b/net/ipv6/inet6_hashtables.c
+--- a/net/ipv6/inet6_hashtables.c
++++ b/net/ipv6/inet6_hashtables.c
+@@ -80,7 +80,9 @@ begin:
+ 		if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+ 			goto out;
+ 
+-		if (unlikely(!INET6_MATCH(sk, net, saddr, daddr, ports, dif, sdif))) {
++		if (unlikely(hlist_nulls_unhashed_lockless(&sk->sk_nulls_node) ||
++			     !INET6_MATCH(sk, net, saddr, daddr, ports, dif,
++					  sdif))) {
+ 			sock_gen_put(sk);
+ 			goto begin;
+ 		}
+diff --git a/net/netfilter/nfnetlink_queue.c b/net/netfilter/nfnetlink_queue.c
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -33,6 +33,7 @@
+ #include <linux/netfilter/nfnetlink_queue.h>
+ #include <linux/netfilter/nf_conntrack_common.h>
+ #include <linux/list.h>
++#include <net/ip.h>
+ #include <net/sock.h>
+ #include <net/tcp_states.h>
+ #include <net/netfilter/nf_queue.h>
+@@ -377,6 +378,20 @@ nla_put_failure:
+ 	return -1;
+ }
+ 
++static int nf_queue_checksum_help(struct sk_buff *entskb)
++{
++	if (entskb->protocol == htons(ETH_P_IP)) {
++		if (!pskb_network_may_pull(entskb, sizeof(struct iphdr)) ||
++		    ip_check_csum_start(entskb))
++			return -EINVAL;
++	}
++
++	if (skb_csum_is_sctp(entskb))
++		return skb_crc32c_csum_help(entskb);
++
++	return skb_checksum_help(entskb);
++}
++
+ static struct sk_buff *
+ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
+ 			   struct nf_queue_entry *entry,
+@@ -434,7 +449,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
+ 	case NFQNL_COPY_PACKET:
+ 		if (!(queue->flags & NFQA_CFG_F_GSO) &&
+ 		    entskb->ip_summed == CHECKSUM_PARTIAL &&
+-		    skb_checksum_help(entskb))
++		    nf_queue_checksum_help(entskb))
+ 			return NULL;
+ 
+ 		data_len = READ_ONCE(queue->copy_range);
+@@ -809,7 +824,7 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
+ 		break;
+ 	}
+ 
+-	if ((queue->flags & NFQA_CFG_F_GSO) || !skb_is_gso(skb))
++	if (!skb_is_gso(skb) || ((queue->flags & NFQA_CFG_F_GSO) && !skb_is_gso_sctp(skb)))
+ 		return __nfqnl_enqueue_packet(net, queue, entry);
+ 
+ 	nf_bridge_adjust_skb_data(skb);
+diff --git a/net/netfilter/xt_CHECKSUM.c b/net/netfilter/xt_CHECKSUM.c
+--- a/net/netfilter/xt_CHECKSUM.c
++++ b/net/netfilter/xt_CHECKSUM.c
+@@ -18,6 +18,7 @@
+ 
+ #include <linux/netfilter_ipv4/ip_tables.h>
+ #include <linux/netfilter_ipv6/ip6_tables.h>
++#include <net/ip.h>
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Michael S. Tsirkin <mst@redhat.com>");
+@@ -28,8 +29,11 @@ MODULE_ALIAS("ip6t_CHECKSUM");
+ static unsigned int
+ checksum_tg(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+-	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb))
++	if (skb->ip_summed == CHECKSUM_PARTIAL && !skb_is_gso(skb)) {
++		if (xt_family(par) == NFPROTO_IPV4 && ip_check_csum_start(skb))
++			return NF_DROP;
+ 		skb_checksum_help(skb);
++	}
+ 
+ 	return XT_CONTINUE;
+ }
+diff --git a/net/xfrm/xfrm_output.c b/net/xfrm/xfrm_output.c
+--- a/net/xfrm/xfrm_output.c
++++ b/net/xfrm/xfrm_output.c
+@@ -675,16 +675,22 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
+ 	}
+ 
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+-		err = skb_checksum_help(skb);
+-		if (err) {
+-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+-			kfree_skb(skb);
+-			return err;
++		if (skb->protocol == htons(ETH_P_IP)) {
++			err = ip_check_csum_start(skb);
++			if (err)
++				goto error;
+ 		}
++		err = skb_checksum_help(skb);
++		if (err)
++			goto error;
+ 	}
+ 
+ out:
+ 	return xfrm_output2(net, sk, skb);
++error:
++	XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
++	kfree_skb(skb);
++	return err;
+ }
+ EXPORT_SYMBOL_GPL(xfrm_output);
+ 
