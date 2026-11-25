@@ -345,7 +345,8 @@ build_klp() {
 		echo "kernel:  $(grep '^CONFIG_CC_VERSION_TEXT=' "$config")"
 		echo "gcc:     $(gcc --version | head -1)"
 	} | tee -a "$OUT/compiler.txt"
-	dnf -y --enablerepo=vault-devel install xxhash-devel
+	# recountdiff (patchutils): klp-build uses it from 10.3 on.
+	dnf -y --enablerepo=vault-devel install xxhash-devel patchutils
 	# For the objtool switch's crash backtraces (10.0).
 	dnf -y install gdb || true
 
