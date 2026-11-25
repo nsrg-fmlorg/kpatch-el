@@ -24,8 +24,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.kernels }}
-  cancel-in-progress: true
+  # Not the kernel list: a long one is refused before any job starts.
+  group: ${{ github.workflow }}-${{ github.run_id }}
 
 jobs:
   # Which kernels (tools/select-kernels.py).  GitHub allows at most 256
