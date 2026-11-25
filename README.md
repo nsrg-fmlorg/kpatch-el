@@ -71,6 +71,10 @@ fixes, the one form in `tools/extra/` that applies without fuzz:
 - Request socket migration differs in context only, except on kernels
   before upstream 97c8a3c1f73d, where the clone's own timer was left
   armed; those take that change as well, which the fix relies on.
+- On 9, kpatch-build refuses the static calls in `kvm_vcpu_reset()`, which
+  belong to the `kvm` module. What the fix does inside it is done around
+  it instead, in the two callers that can run it while an L2 is active:
+  `kvm_apic_accept_events()` (INIT) and, on AMD, `shutdown_interception()`.
 - CVE-2022-3344's fix calls the `leave_nested` member of
   `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a
   livepatch cannot add one, so **they get no KVM fix**: load `kvm_amd`

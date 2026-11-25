@@ -161,14 +161,21 @@ D=$HERE/../patches/$DISTRO/kpatch/$NVR.diff
 [ -f "$D" ] || { echo "no $D"; exit 1; }
 has=
 grep -q 'kfree_rcu(rcu_deref' "$D" && has="$has 98432"
-grep -q '^+.*hlist_nulls_unhashed_lockless' "$D" && has="$has lookup"
+grep -qE '^\+.*(hlist_nulls_unhashed_lockless|READ_ONCE\(sk->sk_nulls_node.pprev)' "$D" && has="$has lookup"
 grep -q '^+++ b/net/ipv4/syncookies.c' "$D" && has="$has syncookies"
 grep -q '^+++ b/net/ipv4/tcp_input.c' "$D" && has="$has fastopen"
-grep -q '^+++ b/arch/x86/kvm/x86.c' "$D" && has="$has kvm"
-grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$D" && has="$has svm"
+kvmfns= svmfns=
+case $MAJOR in
+9 | 8) grep -q '^+++ b/arch/x86/kvm/x86.c' "$D" && kvmfns=kvm_vcpu_reset ;;
+*) grep -q '^+++ b/arch/x86/kvm/x86.c' "$HERE/../patches/$DISTRO/$NVR.diff" && kvmfns=kvm_vcpu_reset ;;
+esac
+grep -q '^+++ b/arch/x86/kvm/lapic.c' "$D" && kvmfns=kvm_apic_accept_events
+grep -q '^+.*svm_leave_nested(vcpu);' "$D" && svmfns="svm_vcpu_free svm_free_nested"
+grep -q '^+.*kvm_mmu_reset_context' "$D" && grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$D" &&
+	[ "$kvmfns" = kvm_apic_accept_events ] && svmfns="$svmfns shutdown_interception"
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=
 [ -f "$W/$OLDKO" ] && old='$HOME/'$OLDKO
-vm "sudo FROM_RELEASE=${FROM_RELEASE:-} SCRIPT_REF=${SCRIPT_REF:-} OLDREPO=$OLDREPO OLDREF=${OLDREF:-} OLDKO=$old NEED99999=$need99999 HAS='$has' bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
+vm "sudo FROM_RELEASE=${FROM_RELEASE:-} SCRIPT_REF=${SCRIPT_REF:-} OLDREPO=$OLDREPO OLDREF=${OLDREF:-} OLDKO=$old NEED99999=$need99999 HAS='$has' KVMFNS='$kvmfns' SVMFNS='$svmfns' bash ~/loadtest-guest.sh ~/$(basename "$KO")" || rc=$?
 vm 'sudo systemctl poweroff' || true
 exit $rc

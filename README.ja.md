@@ -73,6 +73,10 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
   97c8a3c1f73d より前のカーネルは、複製した request のタイマーを動かした
   ままにしており、この直しはそれが止まっていることを前提にしているので、
   その変更も入れます。
+- 9 では、`kvm_vcpu_reset()` の中の、`kvm` モジュールにある static call を
+  kpatch-build が扱えません。そこで直しの中身をその前後で行います。L2 の
+  実行中にこれを呼びうる、`kvm_apic_accept_events()` (INIT) と、AMD の
+  `shutdown_interception()` の二つです。
 - CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
   8.3〜8.6 と 9.0 にはこのメンバーが無く、livepatch では足せないため、
   **KVM の直しは入りません**。`kvm_amd` を `nested=0` で読み込んでください。

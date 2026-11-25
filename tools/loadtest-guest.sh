@@ -68,7 +68,13 @@ before_csum=$(bash "$(dirname "$0")/csum-probe.sh" before); echo "$before_csum"
 need99999=${NEED99999:-}
 # The parts of the port in this kernel's module (tools/loadtest.sh).
 HAS=" ${HAS:-} "
-has() { [[ $HAS == *" $1 "* ]]; }
+has() {
+	case $1 in
+	kvm) [ -n "${KVMFNS:-}" ] ;;
+	svm) [ -n "${SVMFNS:-}" ] ;;
+	*) [[ $HAS == *" $1 "* ]] ;;
+	esac
+}
 echo "port:$HAS"
 echo "CVE-2026-99999 part in the module: ${need99999:+yes}${need99999:-no}"
 case $before_csum in
@@ -165,10 +171,14 @@ done
 # CVE-2022-3344 and CVE-2026-99312: the vCPU reset in kvm.
 if ! has kvm; then
 	echo "note: no KVM fix in this kernel's module"
-elif compgen -G "/sys/kernel/livepatch/$name/kvm/kvm_vcpu_reset,*" >/dev/null; then
-	echo "function kvm/kvm_vcpu_reset: patched"
 else
-	bad "function kvm_vcpu_reset not in the livepatch"
+	for f in $KVMFNS; do
+		if compgen -G "/sys/kernel/livepatch/$name/kvm/$f,*" >/dev/null; then
+			echo "function kvm/$f: patched"
+		else
+			bad "function $f not in the livepatch"
+		fi
+	done
 fi
 
 # Each patched object must have its directory.  Where the kernel has a
@@ -237,9 +247,9 @@ case $sc in *"syncookie: v4=200/200 v6=200/200"*) ;; *) bad "syncookie.py failed
 tracing=/sys/kernel/debug/tracing
 [ -e $tracing/enabled_functions ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
 kvm_hooked() {
-	local f fns="kvm_vcpu_reset" ef
+	local f fns=${KVMFNS:-} ef
 	has kvm || return 0
-	has svm && [ "$kvmvendor" = kvm_amd ] && fns="$fns svm_vcpu_free svm_free_nested"
+	has svm && [ "$kvmvendor" = kvm_amd ] && fns="$fns $SVMFNS"
 	ef=$(cat $tracing/enabled_functions)
 	for f in $fns; do
 		if grep -E "^$f \[kvm(_amd)?\] .* I" <<<"$ef"; then

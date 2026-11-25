@@ -41,7 +41,7 @@ net/ipv4/af_inet.c net/ipv4/tcp_ipv4.c include/linux/rcupdate.h
 net/ipv4/inet_hashtables.c net/ipv6/inet6_hashtables.c net/ipv4/syncookies.c
 net/ipv4/tcp_input.c net/ipv4/inet_connection_sock.c
 arch/x86/kvm/x86.c arch/x86/kvm/svm/nested.c arch/x86/kvm/svm/svm.c
-arch/x86/kvm/vmx/nested.c'
+arch/x86/kvm/vmx/nested.c arch/x86/kvm/lapic.c include/linux/list_nulls.h'
 P=$OUT/patches/$DISTRO
 mkdir -p "$P/kpatch"
 RES=$OUT/result-$DISTRO-$MINOR.txt
@@ -62,6 +62,8 @@ srpms=$(printf '%s\n' "$srclist" | grep -oE 'kernel-[0-9][^"]*\.src\.rpm' | sort
 # regex to every minor.
 srpms=$(printf '%s\n' "$srpms" | grep -E -- "$ONLY")
 
+k9=
+[ "${MINOR%%.*}" = 9 ] && k9=--kpatch9
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -176,7 +178,7 @@ while read -r srpm; do
 		continue
 	fi
 	# The other three CVEs go on top, in both trees (tools/extra.py).
-	if ! extra=$(python3 -I "$HERE/extra.py" "$work/b" "$work/k" 2>&1); then
+	if ! extra=$(python3 -I "$HERE/extra.py" $k9 "$work/b" "$work/k" 2>&1); then
 		echo "$nvr $snvr EXTRA-FAILED 99999=$match 98432=${fixed98432:+already} $(printf '%s' "$extra" | tail -1)" >> "$RES"
 		mkdir -p "$OUT/src-$nvr"
 		(cd "$work/a" && cp --parents net/ipv4/inet_hashtables.c net/ipv6/inet6_hashtables.c \

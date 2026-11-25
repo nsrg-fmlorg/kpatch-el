@@ -1,21 +1,24 @@
 """Apply the fixes of CVE-2026-99288, CVE-2022-3344 and CVE-2026-99312.
 
-usage: extra.py <tree>...
+usage: extra.py [--kpatch9] <tree> [<kpatch tree>]
 
 Each part of a fix has one or more forms in tools/extra/<part>.<form>.diff.
 A form is taken only when every hunk applies with no fuzz, and exactly one
 form must.  A part is skipped where the tree has the fix, or (migrate) no
-such code.  The same form is applied to every tree.  Prints one line,
+such code.  The same form is applied to both trees, except KVM's
+with --kpatch9 (see kvm_kpatch9()).  Prints one line,
 "<part>=<form>" for each part, and exits 1 when a part has no form, 2 when
 it has several; nothing is written then.
 """
 import glob
 import os
+import re
 import subprocess
 import sys
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extra')
-trees = sys.argv[1:]
+kpatch9 = sys.argv[1] == '--kpatch9'
+trees = sys.argv[2:] if kpatch9 else sys.argv[1:]
 
 
 def text(f):
@@ -86,7 +89,84 @@ for part in ('lookup4', 'lookup6', 'syncookies', 'fastopen', 'migrate', 'kvm'):
 print(' '.join(res))
 if rc:
     sys.exit(rc)
-for t in trees:
+
+def edit(t, f, fn):
+    f = f'{t}/{f}'
+    old = open(f, errors='surrogateescape').read()
+    new = fn(old)
+    assert new != old, f
+    open(f, 'w', errors='surrogateescape').write(new)
+
+
+def body(src, start):
+    i = src.index(start)
+    return i, src.index('\n}\n', i) + 3
+
+
+def kvm_kpatch9(t, forced):
+    """KVM on 9 with kpatch-build, which cannot handle kvm's own static
+    calls and static keys, of which kvm_vcpu_reset() has some fifteen,
+    most of them in inline functions of headers.  On AMD an L2 can be
+    active there on INIT, in kvm_apic_accept_events(), and on SHUTDOWN, in
+    shutdown_interception(); the third caller with init_event set, where
+    there is one, is for SEV-SNP.  So what the fix does inside
+    kvm_vcpu_reset() is done around it in those two, and their own static
+    calls and the lapic_in_kernel() key become indirect calls and a test.
+    @forced: kvm_vcpu_reset() does not leave the nested mode yet."""
+    def lapic(s):
+        a, b = body(s, 'int kvm_apic_accept_events(struct kvm_vcpu *vcpu)')
+        f = s[a:b]
+        n = f.count('kvm_vcpu_reset(vcpu, true);')
+        assert n == 1, n
+        lead = ('\t\tif (is_guest_mode(vcpu))\n'
+                '\t\t\tkvm_x86_ops.nested_ops->leave_nested(vcpu);\n') if forced else ''
+        f = f.replace('\t\tkvm_vcpu_reset(vcpu, true);\n',
+                      lead + '\t\tkvm_vcpu_reset(vcpu, true);\n'
+                      '\t\tkvm_mmu_reset_context(vcpu);\n')
+        f = f.replace('!kvm_apic_has_pending_init_or_sipi(vcpu)',
+                      '!(vcpu->arch.apic && vcpu->arch.apic->pending_events)')
+        f = f.replace('!lapic_in_kernel(vcpu)', '!vcpu->arch.apic')
+        assert f.count('!kvm_apic_init_sipi_allowed(vcpu)') == 1
+        f = f.replace('!kvm_apic_init_sipi_allowed(vcpu)',
+                      '(is_smm(vcpu) ||\n\t    KPATCH_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))')
+        f, k = re.subn(r'(static_call\(kvm_x86_|kvm_x86_call\()vcpu_deliver_sipi_vector\)',
+                       'KPATCH_STATIC_CALL(kvm_x86_vcpu_deliver_sipi_vector)', f)
+        assert k == 1, k
+        assert not re.search(r'(?<!KPATCH_STATIC_CALL\()\b(static_call|kvm_x86_call)\(', f), f
+        s = s[:a] + f + s[b:]
+        inc = [m.end() for m in re.finditer(r'^#include .*\n', s, re.M)]
+        return s[:inc[-1]] + '#include "kpatch-macros.h"\n' + s[inc[-1]:]
+
+    def svm(s):
+        a, b = body(s, 'static int shutdown_interception(struct kvm_vcpu *vcpu)')
+        f = s[a:b]
+        assert f.count('kvm_vcpu_reset(vcpu, true);') == 1
+        f = re.sub(r'(\t+)kvm_vcpu_reset\(vcpu, true\);\n',
+                   lambda m: ((f'{m[1]}if (is_guest_mode(vcpu))\n{m[1]}\tsvm_leave_nested(vcpu);\n'
+                               if forced else '') + m[0] +
+                              f'{m[1]}kvm_mmu_reset_context(vcpu);\n'), f)
+        return s[:a] + f + s[b:]
+
+    edit(t, 'arch/x86/kvm/lapic.c', lapic)
+    edit(t, 'arch/x86/kvm/svm/svm.c', svm)
+
+
+kvm_todo = [d for d in todo if os.path.basename(d).startswith('kvm.')]
+LOCKLESS = 'hlist_nulls_unhashed_lockless(' in text('include/linux/list_nulls.h')
+for n, t in enumerate(trees):
+    k9 = kpatch9 and n == 1 and kvm_todo
+    if k9:
+        x86 = open(f'{t}/arch/x86/kvm/x86.c', errors='surrogateescape').read()
     for d in todo:
+        if k9 and d in kvm_todo and not d.endswith('kvm.el8.diff'):
+            continue
         r = patch(t, d)
         assert r.returncode == 0, (t, d, r.stdout)
+    if k9:
+        # Only the parts outside x86.c stay.
+        open(f'{t}/arch/x86/kvm/x86.c', 'w', errors='surrogateescape').write(x86)
+        kvm_kpatch9(t, kvm_todo[0].endswith('kvm.el8.diff'))
+    if not LOCKLESS and any('lookup' in d for d in todo):
+        # 8.3 has no such helper; this is what it does.
+        for f in ('net/ipv4/inet_hashtables.c', 'net/ipv6/inet6_hashtables.c'):
+            edit(t, f, lambda s: s.replace(UNHASHED, '!READ_ONCE(sk->sk_nulls_node.pprev)'))
