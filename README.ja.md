@@ -77,7 +77,9 @@ upstream の hunk がそのまま当たります。それより前の EL8 のカ
   `vcpu_enter_guest()` が jump label を理由に断られます。そこで直しの中身を
   この関数の前後で行います。L2 の実行中にこれを呼びうる、
   `kvm_apic_accept_events()` (INIT) と、AMD の `shutdown_interception()` の
-  二つです。
+  二つです。10 の後者では、リセットの前に CR0.PG を立て、
+  `kvm_vcpu_reset()` 自身に MMU をリセットさせます。`kvm_amd` から `kvm` への
+  新しい呼び出しを、klp-build が足せないためです。
 - CVE-2022-3344 の直しは `kvm_x86_nested_ops` の `leave_nested` を呼びます。
   8.3〜8.6 と 9.0 にはこのメンバーが無く、livepatch では足せないため、
   **KVM の直しは入りません**。`kvm_amd` を `nested=0` で読み込んでください。

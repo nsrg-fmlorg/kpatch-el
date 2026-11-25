@@ -1,13 +1,13 @@
 """Apply the fixes of CVE-2026-99288, CVE-2022-3344 and CVE-2026-99312.
 
-usage: extra.py [--kpatch | --klp] <tree> [<kpatch tree>]
+usage: extra.py [--kpatch | --klp [--lent]] <tree> [<kpatch tree>]
 
 Each part of a fix has one or more forms in tools/extra/<part>.<form>.diff.
 A form is taken only when every hunk applies with no fuzz, and exactly one
 form must.  A part is skipped where the tree has the fix, or (migrate) no
 such code.  The same form is applied to both trees, except KVM's
 in the tree that is built (see kvm_callers()): the second with --kpatch,
-for 8 and 9, the first with --klp, for 10.  Prints one line,
+for 8 and 9, the first with --klp, for 10 (--lent: 10.0 and 10.1).  Prints one line,
 "<part>=<form>" for each part, and exits 1 when a part has no form, 2 when
 it has several; nothing is written then.
 """
@@ -20,6 +20,8 @@ import sys
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extra')
 mode = sys.argv[1] if sys.argv[1] in ('--kpatch', '--klp') else None
 trees = sys.argv[2:] if mode else sys.argv[1:]
+lent = trees[0] == '--lent'
+trees = trees[lent:]
 MACRO, HEADER = (('KLP_STATIC_CALL', '<linux/livepatch_helpers.h>') if mode == '--klp'
                  else ('KPATCH_STATIC_CALL', '"kpatch-macros.h"'))
 
@@ -150,6 +152,16 @@ def kvm_callers(t, forced):
         a, b = body(s, 'static int shutdown_interception(struct kvm_vcpu *vcpu)')
         f = s[a:b]
         assert f.count('kvm_vcpu_reset(vcpu, true);') == 1
+        if mode == '--klp':
+            # klp-build refuses kvm_amd's first reference to a symbol that
+            # kvm exports ("unexpected klp reloc for new symbol
+            # kvm_mmu_reset_context", 10.3).  kvm_vcpu_reset() resets the
+            # MMU itself when CR0.PG was set, and then sets CR0 anew; so
+            # have it set.
+            assert not forced
+            f = f.replace('kvm_vcpu_reset(vcpu, true);',
+                          'vcpu->arch.cr0 |= X86_CR0_PG;\n\t\tkvm_vcpu_reset(vcpu, true);')
+            return s[:a] + f + s[b:]
         f = re.sub(r'(\t+)kvm_vcpu_reset\(vcpu, true\);\n',
                    lambda m: ((f'{m[1]}if (is_guest_mode(vcpu))\n{m[1]}\tsvm_leave_nested(vcpu);\n'
                                if forced else '') + m[0] +
@@ -175,6 +187,14 @@ for n, t in enumerate(trees):
         # Only the parts outside x86.c stay.
         open(f'{t}/arch/x86/kvm/x86.c', 'w', errors='surrogateescape').write(x86)
         kvm_callers(t, kvm_todo[0].endswith('kvm.el8.diff'))
+    if lent and n == 0 and 'cond_resched()' in text('net/ipv4/inet_connection_sock.c'):
+        # The klp-build lent to 10.1 does not carry over .static_call_sites,
+        # and the module build then stops on "can't find static_call_key
+        # symbol: __SCK__cond_resched".  Call what the static call calls.
+        def listen_stop(s):
+            a, b = body(s, 'void inet_csk_listen_stop(struct sock *sk)')
+            return s[:a] + s[a:b].replace('\tcond_resched();', '\t__cond_resched();') + s[b:]
+        edit(t, 'net/ipv4/inet_connection_sock.c', listen_stop)
     if not LOCKLESS and any('lookup' in d for d in todo):
         # 8.3 has no such helper; this is what it does.
         for f in ('net/ipv4/inet_hashtables.c', 'net/ipv6/inet6_hashtables.c'):

@@ -62,7 +62,7 @@ srpms=$(printf '%s\n' "$srclist" | grep -oE 'kernel-[0-9][^"]*\.src\.rpm' | sort
 # regex to every minor.
 srpms=$(printf '%s\n' "$srpms" | grep -E -- "$ONLY")
 
-case "${MINOR%%.*}" in 10) mode=--klp;; *) mode=--kpatch;; esac
+case "$MINOR" in 10.0 | 10.1) mode="--klp --lent";; 10.*) mode=--klp;; *) mode=--kpatch;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

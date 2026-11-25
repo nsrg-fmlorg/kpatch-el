@@ -172,7 +172,7 @@ case $MAJOR in 9 | 8) ;; *) KD=$HERE/../patches/$DISTRO/$NVR.diff ;; esac
 grep -q '^+++ b/arch/x86/kvm/x86.c' "$KD" && kvmfns=kvm_vcpu_reset
 grep -q '^+++ b/arch/x86/kvm/lapic.c' "$KD" && kvmfns=kvm_apic_accept_events
 grep -q '^+.*svm_leave_nested(vcpu);' "$KD" && svmfns="svm_vcpu_free svm_free_nested"
-grep -q '^+.*kvm_mmu_reset_context' "$KD" && grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$KD" &&
+grep -qE '^\+.*(kvm_mmu_reset_context|arch\.cr0 \|= X86_CR0_PG)' "$KD" && grep -q '^+++ b/arch/x86/kvm/svm/svm.c' "$KD" &&
 	[ "$kvmfns" = kvm_apic_accept_events ] && svmfns="$svmfns shutdown_interception"
 # Expanded by the guest's shell: the file was put in the guest user's home.
 old=

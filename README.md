@@ -76,6 +76,9 @@ fixes, the one form in `tools/extra/` that applies without fuzz:
   jump labels. What the fix does inside it is done around it instead, in
   the two callers that can run it while an L2 is active:
   `kvm_apic_accept_events()` (INIT) and, on AMD, `shutdown_interception()`.
+  On 10 the latter sets CR0.PG before the reset, which makes
+  `kvm_vcpu_reset()` reset the MMU itself: klp-build cannot add a call
+  from `kvm_amd` to `kvm`.
 - CVE-2022-3344's fix calls the `leave_nested` member of
   `kvm_x86_nested_ops`. 8.3 to 8.6 and 9.0 have no such member and a
   livepatch cannot add one, so **they get no KVM fix**: load `kvm_amd`
