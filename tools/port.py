@@ -9,12 +9,14 @@ def ed(p,old,new,count=1):
 # IP options), so kfree_rcu() must skip NULL as kfree() does; it does in
 # every EL8-10 tree checked (8.4 GA onward), and this stops where it does
 # not rather than turn every socket close into call_rcu(NULL).
-rcu=open(root+'/include/linux/rcupdate.h').read()
-assert re.search(r'#define kv?free_rcu(_arg_2)?\(ptr, rhf\)\s*\\\s*\ndo \{\s*\\\s*\n\s*typeof \(ptr\) ___p = \(ptr\);\s*\\\s*\n\s*\\\s*\n\s*if \(___p\)',rcu),'kfree_rcu() does not skip NULL'
-ed('net/ipv4/af_inet.c','''	kfree(rcu_dereference_protected(inet->inet_opt, 1));
+# Skipped where the kernel has the fix (from 553.182.1).
+if 'kfree_rcu(rcu_dereference_protected(inet->inet_opt' not in open(root+'/net/ipv4/af_inet.c').read():
+    rcu=open(root+'/include/linux/rcupdate.h').read()
+    assert re.search(r'#define kv?free_rcu(_arg_2)?\(ptr, rhf\)\s*\\\s*\ndo \{\s*\\\s*\n\s*typeof \(ptr\) ___p = \(ptr\);\s*\\\s*\n\s*\\\s*\n\s*if \(___p\)',rcu),'kfree_rcu() does not skip NULL'
+    ed('net/ipv4/af_inet.c','''	kfree(rcu_dereference_protected(inet->inet_opt, 1));
 ''','''	kfree_rcu(rcu_dereference_protected(inet->inet_opt, 1), rcu);
 ''')
-ed('net/ipv4/tcp_ipv4.c','''	kfree(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1));
+    ed('net/ipv4/tcp_ipv4.c','''	kfree(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1));
 ''','''	kfree_rcu(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1), rcu);
 ''')
 

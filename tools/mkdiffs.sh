@@ -37,7 +37,11 @@ esac
 FILES='include/net/ip.h net/ipv4/ip_output.c net/xfrm/xfrm_output.c
 net/bridge/netfilter/nf_conntrack_bridge.c net/netfilter/nfnetlink_queue.c
 net/netfilter/xt_CHECKSUM.c net/core/dev.c net/core/skbuff.c include/linux/skbuff.h
-net/ipv4/af_inet.c net/ipv4/tcp_ipv4.c include/linux/rcupdate.h'
+net/ipv4/af_inet.c net/ipv4/tcp_ipv4.c include/linux/rcupdate.h
+net/ipv4/inet_hashtables.c net/ipv6/inet6_hashtables.c net/ipv4/syncookies.c
+net/ipv4/tcp_input.c net/ipv4/inet_connection_sock.c
+arch/x86/kvm/x86.c arch/x86/kvm/svm/nested.c arch/x86/kvm/svm/svm.c
+arch/x86/kvm/vmx/nested.c'
 P=$OUT/patches/$DISTRO
 mkdir -p "$P/kpatch"
 RES=$OUT/result-$DISTRO-$MINOR.txt
@@ -108,8 +112,9 @@ while read -r srpm; do
 	done
 	rm -rf "$work/s" "$work/t"
 
+	fixed98432=
 	if grep -q 'kfree_rcu(rcu_dereference_protected(inet->inet_opt' "$work/a/net/ipv4/af_inet.c"; then
-		echo "$nvr $snvr ALREADY-FIXED" >> "$RES"; continue
+		fixed98432=y
 	fi
 	fixed99999=
 	grep -q 'ip_check_csum_start' "$work/a/include/net/ip.h" && fixed99999=y
@@ -134,7 +139,9 @@ while read -r srpm; do
 	grep -E '^[+-][^+-]' "$work/out-b.diff" | LC_ALL=C sort > "$work/chg.txt"
 	LC_ALL=C comm -12 "$work/chg.txt" "$HERE/ref/98432/upstream.txt" > "$work/chg98432.txt"
 	LC_ALL=C comm -23 "$work/chg.txt" "$HERE/ref/98432/upstream.txt" > "$work/chg99999.txt"
-	if ! cmp -s "$work/chg98432.txt" "$HERE/ref/98432/upstream.txt"; then
+	ref98432=$HERE/ref/98432/upstream.txt
+	[ -z "$fixed98432" ] || ref98432=/dev/null
+	if ! cmp -s "$work/chg98432.txt" "$ref98432"; then
 		echo "$nvr $snvr NO-MATCH-98432" >> "$RES"
 		cp "$work/out-b.diff" "$OUT/nomatch-$DISTRO-$nvr.diff"
 		continue
@@ -162,14 +169,31 @@ while read -r srpm; do
 	LC_ALL=C comm -23 "$work/kchg.txt" "$HERE/ref/98432/upstream.txt" > "$work/kchg99999.txt"
 	kref=$HERE/ref/99999-kpatch/$match.txt
 	[ "$match" = already ] && kref=/dev/null
-	if ! cmp -s "$work/kchg98432.txt" "$HERE/ref/98432/upstream.txt" ||
+	if ! cmp -s "$work/kchg98432.txt" "$ref98432" ||
 	   ! cmp -s "$work/kchg99999.txt" "$kref"; then
 		echo "$nvr $snvr NO-MATCH-KPATCH" >> "$RES"
 		cp "$work/out-k.diff" "$OUT/nomatch-kpatch-$DISTRO-$nvr.diff"
 		continue
 	fi
+	# The other three CVEs go on top, in both trees (tools/extra.py).
+	if ! extra=$(python3 -I "$HERE/extra.py" "$work/b" "$work/k" 2>&1); then
+		echo "$nvr $snvr EXTRA-FAILED 99999=$match 98432=${fixed98432:+already} $(printf '%s' "$extra" | tail -1)" >> "$RES"
+		mkdir -p "$OUT/src-$nvr"
+		(cd "$work/a" && cp --parents net/ipv4/inet_hashtables.c net/ipv6/inet6_hashtables.c \
+			net/ipv4/syncookies.c net/ipv4/tcp_input.c net/ipv4/inet_connection_sock.c \
+			arch/x86/kvm/x86.c arch/x86/kvm/svm/*.c arch/x86/kvm/vmx/nested.c "$OUT/src-$nvr/" 2>/dev/null)
+		gzip -rq "$OUT/src-$nvr"
+		continue
+	fi
+	for t in b k; do
+		(cd "$work" && git diff --no-index a $t) |
+			sed -e "s|^diff --git a/a/|diff --git a/|; s| b/$t/| b/|" \
+			    -e "s|^--- a/a/|--- a/|; s|^+++ b/$t/|+++ b/|" |
+			grep -v '^index ' > "$work/out-$t.diff"
+	done
+	[ -s "$work/out-k.diff" ] || { echo "$nvr $snvr NOTHING-TO-DO $extra" >> "$RES"; continue; }
 	cp "$work/out-b.diff" "$P/$nvr.diff"
 	cp "$work/out-k.diff" "$P/kpatch/$nvr.diff"
-	echo "$nvr $snvr OK 99999=$match" >> "$RES"
+	echo "$nvr $snvr OK 98432=${fixed98432:+already} 99999=$match $extra" >> "$RES"
 done
 cat "$RES"
