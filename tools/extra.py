@@ -126,9 +126,12 @@ def kvm_kpatch9(t, forced):
         f = f.replace('!kvm_apic_has_pending_init_or_sipi(vcpu)',
                       '!(vcpu->arch.apic && vcpu->arch.apic->pending_events)')
         f = f.replace('!lapic_in_kernel(vcpu)', '!vcpu->arch.apic')
-        assert f.count('!kvm_apic_init_sipi_allowed(vcpu)') == 1
-        f = f.replace('!kvm_apic_init_sipi_allowed(vcpu)',
-                      '(is_smm(vcpu) ||\n\t    KPATCH_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))')
+        # 9.1 calls the negation kvm_vcpu_latch_init().
+        blocked = ('(is_smm(vcpu) ||\n\t    '
+                   'KPATCH_STATIC_CALL(kvm_x86_apic_init_signal_blocked)(vcpu))')
+        f, k = re.subn(r'!kvm_apic_init_sipi_allowed\(vcpu\)|kvm_vcpu_latch_init\(vcpu\)',
+                       lambda m: blocked, f)
+        assert k == 1, k
         f, k = re.subn(r'(static_call\(kvm_x86_|kvm_x86_call\()vcpu_deliver_sipi_vector\)',
                        'KPATCH_STATIC_CALL(kvm_x86_vcpu_deliver_sipi_vector)', f)
         assert k == 1, k
